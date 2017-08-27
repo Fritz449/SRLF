@@ -51,4 +51,4 @@ class OsimFactory:
 # fact = OsimFactory()
 # env = fact()
 # while not env.done:
-#     env.step(np.random.rand(*env.get_action_space()))
+#     env.step([1e-4]*18)

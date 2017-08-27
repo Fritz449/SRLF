@@ -17,10 +17,14 @@ class GymAdapterContinuous:
     def step(self, actions):
         mean_possible = (np.array(self.env.action_space.low) + np.array(self.env.action_space.high))/2.
         actions = np.array(actions) - mean_possible
-        actions *= 2/(np.array(self.env.action_space.high) - np.array(self.env.action_space.low))
         actions = np.clip(actions, self.env.action_space.low, self.env.action_space.high)
         obs, reward, done, _ = self.env.step(actions)
-        self.features = obs.reshape((1, -1))
+        obs = obs.reshape(-1)
+        if type(obs[0]) == type(obs):
+            obs[0] = obs[0][0]
+        self.obs = obs.astype(np.float64)
+
+        self.features = self.obs.reshape((1, -1))
         self.reward = reward
         self.total_reward += reward
         self.done = done
@@ -30,7 +34,11 @@ class GymAdapterContinuous:
         self.reward = 0
         self.total_reward = 0
         self.timestamp = 0.
-        self.features = (self.env.reset()).reshape((1, -1))
+        self.features = (self.env.reset()).reshape((1, -1)).astype(np.float64)
+        obs = self.features.reshape(-1)
+        if type(obs[0]) == type(obs):  # There is a strange bug here in some envs
+            obs[0] = obs[0][0]
+        self.obs = obs
         self.done = False
         return self.features
 

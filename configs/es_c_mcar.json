@@ -1,0 +1,22 @@
+{
+    "trainer": "ES",
+    "config": "es_c_mcar.json",
+    "continuous": true,
+    "env_type": "gym",
+    "env_name": "MountainCarContinuous-v0",
+    "max_pathlength": 1000,
+    "noise_scale": 0.15,
+    "n_workers": 8,
+    "n_tasks": 256,
+    "n_pre_tasks": 4,
+    "n_hiddens": [
+        20,
+        10
+    ],
+    "n_tests": 10,
+    "learning_rate": 0.01,
+    "momentum": true,
+    "std": "Const",
+    "ranks": true,
+    "scale": true
+}

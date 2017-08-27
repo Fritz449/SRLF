@@ -14,8 +14,8 @@ class GymAdapterDiscrete:
         self.env = gym.make(name)
         self.reset()
 
-    def step(self, action):
-        obs, reward, done, _ = self.env.step(action)
+    def step(self, actions):
+        obs, reward, done, _ = self.env.step(actions[0])
         self.features = obs.reshape((1, -1))
         self.reward = reward
         self.total_reward += reward
@@ -32,7 +32,7 @@ class GymAdapterDiscrete:
 
     def get_action_space(self):
         space = self.env.action_space
-        return space.n
+        return [space.n]
 
     def get_observation_space(self):
         return self.env.observation_space.shape[0]

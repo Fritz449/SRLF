@@ -89,3 +89,6 @@ ENV/
 .ropeproject
 
 .idea/
+
+# Saves
+.npy
