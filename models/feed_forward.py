@@ -49,7 +49,10 @@ class FeedForward(BaseModel):
                 hidden, weights = denselayer("hidden_critic_{}".format(index), hidden, n_hidden, self.nonlinearity)
                 self.value_weights += weights
                 self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-            self.value = denselayer("value", hidden, 1)
+            self.value, weights = denselayer("value", hidden, 1)
+            self.value = tf.reshape(self.value, [-1])
+            self.value_weights += weights
+            self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
         else:
             self.value = 0.
 
@@ -66,24 +69,24 @@ class FFDiscrete(FeedForward):
         self.action_probs = []
         self.action_logprobs = []
         for index, n in enumerate(self.n_actions):
-            log_probs, weights = denselayer("lob_probs_{}".format(index), self.hidden, n)
+            log_probs, weights = denselayer("lob_probs_{}".format(index), self.hidden, n, tf.nn.log_softmax)
             self.action_logprobs.append(log_probs)
             self.weights += weights
             self.weight_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-            self.action_probs.append(tf.nn.softmax(self.action_logprobs[index]))
+            self.action_probs.append(tf.exp(self.action_logprobs[index]))
 
         self.sess.run(tf.global_variables_initializer())
 
     def act(self, obs, exploration=True, return_dists=False):
-        probs = self.sess.run(self.action_probs, feed_dict={self.state_input: obs})
-        actions = np.zeros(shape=(len(probs),), dtype=np.int32)
-        for i in range(len(probs, )):
+        log_probs = self.sess.run(self.action_logprobs, feed_dict={self.state_input: obs})
+        actions = np.zeros(shape=(len(log_probs),), dtype=np.int32)
+        for i in range(len(log_probs, )):
             if not exploration:
-                actions[i] = np.argmax(probs[i][0])
+                actions[i] = np.argmax(log_probs[i][0])
                 continue
-            actions[i] = np.random.choice(np.arange(self.n_actions[i], dtype=np.int32), p=probs[i][0])
+            actions[i] = np.random.choice(np.arange(self.n_actions[i], dtype=np.int32), p=np.exp(log_probs[i][0]))
         if return_dists:
-            return actions, probs
+            return actions, log_probs
         return actions
 
 
@@ -92,7 +95,7 @@ class FFContinuous(FeedForward):
         FeedForward.__init__(self, sess, args)
         self.n_actions = args['n_actions']
         self.std = args.get('std', "Const")
-        self.init_log_std = args.get('init_log_std', -10)
+        self.init_log_std = args.get('init_log_std', 0)
         self.create_output()
         for weight, ph in zip(self.weights, self.weight_phs):
             self.set_op.append(weight.assign(ph))
@@ -134,5 +137,5 @@ class FFContinuous(FeedForward):
         for i in range(actions.shape[0]):
             actions[i] = np.random.normal(means[i], stds[i])
         if return_dists:
-            return actions, means, stds
+            return actions, [means, stds]
         return actions

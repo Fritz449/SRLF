@@ -1,0 +1,25 @@
+{
+    "trainer": "TRPO",
+    "config": "trpo_c_lland.json",
+    "continuous": true,
+    "env_type": "gym",
+    "env_name": "LunarLanderContinuous-v2",
+    "max_pathlength": 2000,
+    "timesteps_batch": 10000,
+    "noise_scale": 0.3,
+    "n_workers": 4,
+    "n_tasks": 256,
+    "n_pre_tasks": 4,
+    "n_hiddens": [
+        128,
+        128
+    ],
+    "n_tests": 10,
+    "learning_rate": 0.01,
+    "max_kl": 0.01,
+    "gamma": 0.999,
+    "momentum": true,
+    "std": "Param",
+    "ranks": false,
+    "scale": false
+}

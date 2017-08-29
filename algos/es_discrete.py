@@ -133,7 +133,7 @@ class EvolutionStrategiesTrainer(FFDiscrete):
                         'config': self.config,
                         'n_workers': self.n_workers
                     }
-                hlp.launch_rollout_es_workers(worker_args, 'helpers/measure_features.py')
+                hlp.launch_workers(worker_args, 'helpers/measure_features.py')
                 for i in range(self.n_workers * self.n_pre_tasks):
                     self.sums += hlp.load_object(self.variables_server.get("sum_" + str(i)))
                     self.sumsqrs += hlp.load_object(self.variables_server.get("sumsqr_" + str(i)))
@@ -170,7 +170,7 @@ class EvolutionStrategiesTrainer(FFDiscrete):
                     'config': self.config,
                     'n_workers': self.n_workers
                 }
-            hlp.launch_rollout_es_workers(worker_args, 'helpers/make_rollout_es.py')
+            hlp.launch_workers(worker_args, 'helpers/make_rollout_es.py')
 
             scores = []
             train_lengths = []
