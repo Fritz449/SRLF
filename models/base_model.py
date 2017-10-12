@@ -8,6 +8,7 @@ class BaseModel:
         self.weights = []
         self.weight_phs = []
         self.set_op = []
+        self.value_set_op = []
 
     def get_weights(self):
         return self.sess.run(self.weights)

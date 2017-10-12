@@ -17,10 +17,11 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 tf.app.flags.DEFINE_string("config", "config", "Index of task within the job")
 tf.app.flags.DEFINE_integer("worker_index", 0, "Index of task within the job")
-
+tf.app.flags.DEFINE_integer("n_tasks", 100000, "Index of task within the job")
+tf.app.flags.DEFINE_boolean("test", False, "Index of task within the job")
 
 FLAGS = tf.app.flags.FLAGS
-
+n_tasks = FLAGS.n_tasks
 with open('configs/' + FLAGS.config, 'r') as fp:
     config = json.load(fp)
 
@@ -32,13 +33,14 @@ config['n_features'] = env.get_observation_space()
 config['n_actions'] = env.get_action_space()
 agent = algo(sess, config)
 variables_server = Redis(port=12000)
-
+test = FLAGS.test
 phs = []
 set_op = []
 
 for weight in agent.weights:
     phs.append(tf.placeholder(shape=weight.get_shape(), dtype=tf.float32))
     set_op.append(weight.assign(phs[-1]))
+
 if agent.scale:
     means = hlp.load_object(variables_server.get("means"))
     stds = hlp.load_object(variables_server.get("stds"))
@@ -49,7 +51,8 @@ agent.set_weights(weights)
 paths = []
 timesteps_per_worker = agent.timesteps_per_batch//agent.n_workers
 timestep = 0
-while timestep < timesteps_per_worker:
+i_task = 0
+while timestep < timesteps_per_worker and i_task < n_tasks:
     path = {}
     observations, action_tuples, rewards, dist_tuples, timestamps = [], [], [], [], []
     sums = np.zeros((1, env.get_observation_space()))
@@ -62,21 +65,26 @@ while timestep < timesteps_per_worker:
         observations.append(env.features[0])
         timestamps.append(env.timestamp)
 
-        actions, dist_tuple = agent.act(env.features, return_dists=True)
+        if not test:
+            actions, dist_tuple = agent.act(env.features, return_dists=True)
+            dist_tuples.append(dist_tuple)
+        else:
+            actions = agent.act(env.features, exploration=False)
         env.step(actions)
         timestep += 1
 
         action_tuples.append(actions)
-        dist_tuples.append(dist_tuple)
         rewards.append(env.reward)
 
     path["observations"] = np.array(observations)
     path["action_tuples"] = np.array(action_tuples)
     path["rewards"] = np.array(rewards)
-    path["dist_tuples"] = np.array(dist_tuples)
+    if not test:
+        path["dist_tuples"] = np.array(dist_tuples)
     path["timestamps"] = np.array(timestamps)
     path["sumobs"] = sums
     path["sumsqrobs"] = sumsqrs
     path["terminated"] = env.done
     paths.append(path)
+    i_task+=1
 variables_server.set("paths_{}".format(FLAGS.worker_index), hlp.dump_object(paths))

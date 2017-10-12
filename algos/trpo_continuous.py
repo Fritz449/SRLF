@@ -5,7 +5,7 @@ import sys
 import random
 import subprocess
 from redis import Redis
-
+import time
 sys.path.append(os.path.realpath(".."))
 
 import helpers.utils as hlp
@@ -88,7 +88,7 @@ class TRPOContinuousTrainer(FFContinuous):
 
         value_loss = tf.reduce_mean((self.targets["return"] - self.value) ** 2)
 
-        self.value_train_op = tf.train.AdamOptimizer(0.01).minimize(value_loss, var_list=self.value_weights)
+        self.value_train_op = tf.train.AdamOptimizer(0.1).minimize(value_loss, var_list=self.value_weights)
 
     def save(self, name):
         directory = 'saves/' + name + '/'
@@ -98,8 +98,9 @@ class TRPOContinuousTrainer(FFContinuous):
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-        for i, w in enumerate(self.weights):
-            np.save(directory + 'weight_{}'.format(i), self.sess.run(w))
+        for i, tensor in enumerate(tf.global_variables()):
+            value = self.sess.run(tensor)
+            np.save(directory + 'weight_{}'.format(i), value)
 
         if self.scale:
             np.save(directory + 'sums', self.sums)
@@ -119,10 +120,10 @@ class TRPOContinuousTrainer(FFContinuous):
             if iteration is None:
                 iteration = np.max([int(x[10:]) for x in [dir for dir in os.walk(directory)][0][1]])
             directory += 'iteration_{}'.format(iteration) + '/'
-            weights = [np.zeros(shape=w.get_shape()) for w in self.weights]
-            for i in range(len(self.weights)):
-                weights[i] = np.load(directory + 'weight_{}.npy'.format(i))
-            self.set_weights(weights)
+
+            for i, tensor in enumerate(tf.global_variables()):
+                arr = np.load(directory + 'weight_{}.npy'.format(i))
+                self.sess.run(tensor.assign(arr))
 
             if self.scale:
                 self.sums = np.load(directory + 'sums.npy')
@@ -173,7 +174,7 @@ class TRPOContinuousTrainer(FFContinuous):
             self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
         while True:
             print("Iteration {}".format(self.timestep))
-
+            start_time = time.time()
             weights = self.get_weights()
             for i, weight in enumerate(weights):
                 self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
@@ -252,15 +253,23 @@ class TRPOContinuousTrainer(FFContinuous):
             lossafter, kloldnew = self.sess.run([self.loss, self.KL], feed_dict=feed_dict)
 
             print("Time for testing!")
-            total_rewards = []
-            eplens = []
-            for i in range(self.n_tests):
-                self.env.reset()
-                while not self.env.done and self.env.timestamp < self.timesteps_per_launch:
-                    actions = self.act(self.env.features, exploration=False)
-                    self.env.step(actions)
-                total_rewards.append(self.env.get_total_reward())
-                eplens.append(self.env.timestamp)
+
+            weights = self.get_weights()
+            for i, weight in enumerate(weights):
+                self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+            worker_args = \
+                {
+                    'config': self.config,
+                    'n_workers': self.n_workers,
+                    'n_tasks': self.n_tests // self.n_workers,
+                    'test': True
+                }
+            hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
+            paths = []
+            for i in range(self.n_workers):
+                paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            total_rewards = np.array([path["rewards"].sum() for path in paths])
+            eplens = np.array([len(path["rewards"]) for path in paths])
 
             if self.scale:
                 stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
@@ -281,6 +290,7 @@ KL between old and new     {kl}
 Loss after update          {loss}
 Mean of features:          {means}
 Std of features:           {stds}
+Time for iteration:        {tt}
 -------------------------------------------------------------
                 """.format(
                 means=means,
@@ -292,7 +302,8 @@ Std of features:           {stds}
                 max_test=np.max(total_rewards),
                 max_train=np.max(train_rewards),
                 kl=kloldnew,
-                loss=lossafter
+                loss=lossafter,
+                tt=time.time() - start_time
             ))
             if self.timestep % self.save_every == 0:
                 self.save(self.config[:-5])

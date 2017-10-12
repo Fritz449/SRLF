@@ -53,6 +53,8 @@ class FeedForward(BaseModel):
             self.value = tf.reshape(self.value, [-1])
             self.value_weights += weights
             self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
+            for weight, ph in zip(self.value_weights, self.value_weights_phs):
+                self.value_set_op.append(weight.assign(ph))
         else:
             self.value = 0.
 

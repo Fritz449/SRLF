@@ -54,7 +54,8 @@ def env_from_config(config):
             from adapters.gym_discrete import GymAdapterDiscrete
             return GymAdapterDiscrete(config['env_name'])
     else:
-        raise Exception
+        from adapters.osim_adapter import OsimAdapter
+        return OsimAdapter()
 
 
 def dump_object(data):

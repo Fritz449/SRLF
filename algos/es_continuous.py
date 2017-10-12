@@ -5,6 +5,7 @@ import sys
 import random
 import subprocess
 from redis import Redis
+import time
 
 sys.path.append(os.path.realpath(".."))
 
@@ -148,6 +149,7 @@ class EvolutionStrategiesTrainer(FFContinuous):
 
         while True:
             print("Iteration {}".format(self.timestep))
+            start_time = time.time()
             weight_noises = []
             random.seed()
             seed_for_random = random.randint(0, np.iinfo(np.int32).max)
@@ -205,17 +207,23 @@ class EvolutionStrategiesTrainer(FFContinuous):
                     weights[i] += self.learning_rate * gradients[i]
                 self.sess.run(self.set_op, feed_dict=dict(zip(self.weight_phs, weights)))
 
-            print("Time for testing!")
-
-            total_rewards = []
-            eplens = []
-            for i in range(self.n_tests):
-                self.env.reset()
-                while not self.env.done and self.env.timestamp < self.timesteps_per_launch:
-                    actions = self.act(self.env.features)
-                    self.env.step(actions)
-                total_rewards.append(self.env.get_total_reward())
-                eplens.append(self.env.timestamp)
+            print("Time to testing!")
+            weights = self.get_weights()
+            for i, weight in enumerate(weights):
+                self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+            worker_args = \
+                {
+                    'config': self.config,
+                    'n_workers': self.n_workers,
+                    'n_tasks': self.n_tests // self.n_workers,
+                    'test': True
+                }
+            hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
+            paths = []
+            for i in range(self.n_workers):
+                paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            total_rewards = np.array([path["rewards"].sum() for path in paths])
+            eplens = np.array([len(path["rewards"]) for path in paths])
 
             if self.scale:
                 for i in range(self.n_tasks_all):
@@ -238,6 +246,7 @@ Max test score:            {max_test}
 Max train score:           {max_train}
 Mean of features:          {means}
 Std of features:           {stds}
+Time for iteration:        {tt}
 -------------------------------------------------------------
                 """.format(
                 means=means,
@@ -247,7 +256,8 @@ Std of features:           {stds}
                 train_scores=train_mean_score,
                 train_eplengths=np.mean(train_lengths),
                 max_test=np.max(total_rewards),
-                max_train=np.max(scores)
+                max_train=np.max(scores),
+                tt=time.time() - start_time
             ))
             self.train_scores.append(train_mean_score)
             if self.timestep % self.save_every == 0:

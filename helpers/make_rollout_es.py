@@ -42,9 +42,10 @@ for weight in agent.weights:
     set_op.append(weight.assign(phs[-1]))
 
 seeds = hlp.load_object(variables_server.get("seeds"))
-means = hlp.load_object(variables_server.get("means"))
-stds = hlp.load_object(variables_server.get("stds"))
-sess.run(agent.norm_set_op, feed_dict=dict(zip(agent.norm_phs, [means, stds])))
+if agent.scale:
+    means = hlp.load_object(variables_server.get("means"))
+    stds = hlp.load_object(variables_server.get("stds"))
+    sess.run(agent.norm_set_op, feed_dict=dict(zip(agent.norm_phs, [means, stds])))
 
 real_weights = [hlp.load_object(variables_server.get("weight_{}".format(i)))
                 for i in range(len(agent.weights))]
