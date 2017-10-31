@@ -1,18 +1,19 @@
 import json
 
-config_name = 'trpo_d_lland.json'
+config_name = 'ddpg_lland.json'
 args = \
     {
-        'trainer': 'TRPO',
+        'trainer': 'DDPG',
         'config': config_name,
-        'continuous': False,
+        'continuous': True,
         'env_type': 'gym',
-        'env_name': 'LunarLander-v2',
+        'env_name': 'LunarLanderContinuous-v2',
         'max_pathlength': 2000,
         'timesteps_batch': 10000,
         'noise_scale': 0.3,
         'n_workers': 4,
-        'n_tasks': 256,
+        'xp_size': 20000,
+        'batch_size': 128,
         'n_pre_tasks': 4,
         'n_hiddens': [128, 128],
         'n_tests': 10,
@@ -22,7 +23,7 @@ args = \
         'momentum': True,
         'std': 'Param',
         'ranks': False,
-        'scale': False
+        'scale': True
     }
 print (args)
 with open('configs/' + config_name, 'w') as outfile:

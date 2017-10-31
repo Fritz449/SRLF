@@ -11,7 +11,7 @@ import tensorflow as tf
 import numpy as np
 
 
-def launch_workers(worker_args, filename):
+def launch_workers(worker_args, filename, wait=True):
     processes = []
     n_workers = worker_args['n_workers']
     for i in range(n_workers):
@@ -21,8 +21,11 @@ def launch_workers(worker_args, filename):
         cmd += ' --worker_index={}'.format(i)
         processes.append(
             subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, preexec_fn=os.setsid))
-    exit_codes = [p.wait() for p in processes]
-    return exit_codes
+    if wait:
+        exit_codes = [p.wait() for p in processes]
+        return exit_codes
+    else:
+        return processes
 
 
 def agent_from_config(config):
@@ -33,7 +36,7 @@ def agent_from_config(config):
         else:
             from algos.es_discrete import EvolutionStrategiesTrainer
             return EvolutionStrategiesTrainer
-    if config['trainer'] == 'TRPO':
+    elif config['trainer'] == 'TRPO':
         config['critic'] = True
         if config['continuous']:
             from algos.trpo_continuous import TRPOContinuousTrainer
@@ -41,6 +44,9 @@ def agent_from_config(config):
         else:
             from algos.trpo_discrete import TRPODiscreteTrainer
             return TRPODiscreteTrainer
+    elif config['trainer'] == 'DDPG':
+        from algos.deep_dpg import DDPGTrainer
+        return DDPGTrainer
     else:
         raise Exception
 

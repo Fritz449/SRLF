@@ -5,7 +5,7 @@ import helpers.utils as hlp
 import tensorflow as tf
 
 sys.path.append(os.path.realpath(".."))
-config_name = 'trpo_d_lland.json'
+config_name = 'ddpg_lland.json'
 
 with open('configs/' + config_name, 'r') as fp:
     config = json.load(fp)

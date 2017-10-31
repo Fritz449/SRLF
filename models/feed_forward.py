@@ -16,6 +16,7 @@ class FeedForward(BaseModel):
         self.n_hiddens = args['n_hiddens']
         self.n_features = args['n_features']
         self.critic = args.get('critic')
+        self.sep_critic = args.get('sep_critic', True)
         self.nonlinearity = args.get('nonlin', tf.nn.tanh)
         self.state_input = tf.placeholder(tf.float32, shape=(None, self.n_features))
         self.value_weights = []
@@ -44,17 +45,22 @@ class FeedForward(BaseModel):
             self.hidden = hidden
 
         if self.critic:
-            hidden = self.state_input
-            for index, n_hidden in enumerate(self.n_hiddens):
-                hidden, weights = denselayer("hidden_critic_{}".format(index), hidden, n_hidden, self.nonlinearity)
+            if self.sep_critic:
+                hidden = self.state_input
+                for index, n_hidden in enumerate(self.n_hiddens):
+                    hidden, weights = denselayer("hidden_critic_{}".format(index), hidden, n_hidden, self.nonlinearity)
+                    self.value_weights += weights
+                    self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
+                self.value, weights = denselayer("value", hidden, 1)
+                self.value = tf.reshape(self.value, [-1])
                 self.value_weights += weights
                 self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-            self.value, weights = denselayer("value", hidden, 1)
-            self.value = tf.reshape(self.value, [-1])
-            self.value_weights += weights
-            self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-            for weight, ph in zip(self.value_weights, self.value_weights_phs):
-                self.value_set_op.append(weight.assign(ph))
+            else:
+                hidden = self.hidden
+                self.value, weights = denselayer("value", hidden, 1)
+                self.value = tf.reshape(self.value, [-1])
+                self.value_weights += weights
+                self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
         else:
             self.value = 0.
 

@@ -88,7 +88,7 @@ class TRPOContinuousTrainer(FFContinuous):
 
         value_loss = tf.reduce_mean((self.targets["return"] - self.value) ** 2)
 
-        self.value_train_op = tf.train.AdamOptimizer(0.1).minimize(value_loss, var_list=self.value_weights)
+        self.value_train_op = tf.train.AdamOptimizer(0.05).minimize(value_loss, var_list=self.value_weights)
 
     def save(self, name):
         directory = 'saves/' + name + '/'
@@ -140,10 +140,13 @@ class TRPOContinuousTrainer(FFContinuous):
         self.sess.run(tf.global_variables_initializer())
         init_weights = [self.sess.run(w) for w in self.weights]
         for i in range(len(init_weights)):
-            if self.std == "Param" and i == len(init_weights) - 3:
-                init_weights[i] /= 10.
-            if self.std == "Train" and (i == len(init_weights) - 4 or i == len(init_weights) - 2):
-                init_weights[i] /= 10.
+            if self.std == "Param":
+                for i in range(len(init_weights))[-len(self.n_actions):]:
+                    init_weights[i] /= 10.
+            if self.std == "Train":
+                for i in range(len(init_weights))[-2*len(self.n_actions)::2]:
+                    init_weights[i] /= 10.
+
         self.set_weights(init_weights)
 
     def train(self):
@@ -227,7 +230,8 @@ class TRPOContinuousTrainer(FFContinuous):
                          self.targets["old_std"]: action_stds,
                          self.targets["action"]: actions}
 
-            self.sess.run(self.value_train_op, feed_dict)
+            for i in range(5):
+                self.sess.run(self.value_train_op, feed_dict)
 
             train_rewards = np.array([path["rewards"].sum() for path in paths])
             train_lengths = np.array([len(path["rewards"]) for path in paths])
