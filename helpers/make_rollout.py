@@ -49,7 +49,10 @@ if agent.scale:
 weights = [hlp.load_object(variables_server.get("weight_{}".format(i))) for i in range(len(agent.weights))]
 agent.set_weights(weights)
 paths = []
-timesteps_per_worker = agent.timesteps_per_batch//agent.n_workers
+try:
+    timesteps_per_worker = agent.timesteps_per_batch//agent.n_workers
+except:
+    timesteps_per_worker = 100000000
 timestep = 0
 i_task = 0
 while timestep < timesteps_per_worker and i_task < n_tasks:

@@ -45,7 +45,10 @@ def agent_from_config(config):
             from algos.trpo_discrete import TRPODiscreteTrainer
             return TRPODiscreteTrainer
     elif config['trainer'] == 'DDPG':
-        from algos.deep_dpg import DDPGTrainer
+        from algos.ddpg_distributed import DDPGTrainer
+        return DDPGTrainer
+    elif config['trainer'] == 'DDPG-S':
+        from algos.ddpg_single import DDPGTrainer
         return DDPGTrainer
     else:
         raise Exception

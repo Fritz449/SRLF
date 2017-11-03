@@ -1,24 +1,26 @@
 {
-    "n_hiddens": [
-        256, 192
-    ],
-    "n_pre_tasks": 4,
-    "std": "Param",
-    "config": "ddpg_lland.json",
-    "continuous": true,
-    "scale": true,
-    "trainer": "DDPG",
-    "n_workers": 4,
-    "learning_rate": 0.0001,
-    "env_type": "gym",
-    "ranks": false,
+    "n_tests": 10,
+    "random_steps": 10000,
     "max_pathlength": 2000,
-    "n_tests": 256,
-    "batch_size": 128,
-    "env_name": "LunarLanderContinuous-v2",
-    "xp_size": 100000,
-    "timesteps_batch": 10000,
+    "action_noise": 0.0,
+    "env_type": "gym",
+    "learning_rate_critic": 0.001,
+    "n_pre_tasks": 4,
+    "trainer": "DDPG",
+    "batch_size": 64,
+    "learning_rate": 0.0001,
+    "scale": false,
+    "step_delay": 0.01,
+    "test_every": 50000,
+    "tau": 0.001,
+    "config": "ddpg_lland.json",
     "gamma": 0.99,
-    "max_kl": 0.01,
-    "momentum": true
+    "xp_size": 20000,
+    "continuous": true,
+    "env_name": "LunarLanderContinuous-v2",
+    "n_hiddens": [
+        400,
+        300
+    ],
+    "n_workers": 4
 }

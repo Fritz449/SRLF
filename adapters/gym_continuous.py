@@ -25,7 +25,7 @@ class GymAdapterContinuous:
         self.obs = obs.astype(np.float64)
 
         self.features = self.obs.reshape((1, -1))
-        self.reward = reward/10
+        self.reward = reward
         self.total_reward += reward
         self.done = done
         self.timestamp += 1

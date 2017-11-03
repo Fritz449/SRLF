@@ -6,7 +6,7 @@ class BaseModel:
     def __init__(self, sess):
         self.sess = sess
         self.weights = []
-        self.weight_phs = []
+        self.weights_phs = []
         self.set_op = []
         self.value_set_op = []
 
@@ -14,5 +14,5 @@ class BaseModel:
         return self.sess.run(self.weights)
 
     def set_weights(self, new_weights):
-        self.sess.run(self.set_op, feed_dict=dict(zip(self.weight_phs, new_weights)))
+        self.sess.run(self.set_op, feed_dict=dict(zip(self.weights_phs, new_weights)))
 

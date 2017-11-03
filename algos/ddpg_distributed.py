@@ -20,17 +20,22 @@ class DDPGTrainer(DDPGNetwork):
         self.sess = sess
         self.config = args['config']
         self.env = args['environment']
-        self.learning_rate = args['learning_rate']
+        self.l_rate = args['learning_rate']
         self.timesteps_per_launch = args['max_pathlength']
         self.n_workers = args['n_workers']
-        self.timesteps_per_batch = args['timesteps_batch']
+        self.l_rate_critic = args['learning_rate_critic']
         self.n_pre_tasks = args['n_pre_tasks']
         self.n_tests = args['n_tests']
-        self.ranks = args['ranks']
         self.scale = args['scale']
         self.gamma = args['gamma']
+        self.tau = args['tau']
+        self.action_noise = args['action_noise']
+        self.test_every = args['test_every']
+        self.random_steps = args['random_steps']
+        self.step_delay = args['step_delay']
         self.xp_size = args['xp_size']
         self.save_every = args.get('save_every', 1)
+        self.clip_error = args.get('clip_error', 10.)
         self.batch_size = args['batch_size']
         self.sums = self.sumsqrs = self.sumtime = 0
         self.timestep = 0
@@ -40,20 +45,12 @@ class DDPGTrainer(DDPGNetwork):
         np.set_printoptions(precision=6)
 
     def create_internal(self):
-        self.targets = {
-            "value": tf.placeholder(dtype=tf.float32, shape=[self.batch_size]),
-        }
-        self.value_loss = tf.reduce_mean((self.targets["value"] - self.value) ** 2)
-        l2_reg = 0
-        for i in range(len(self.value_weights)):
-            l2_reg += 0.01 * tf.reduce_sum(tf.square(self.value_weights[i]))
-        self.value_train_op = tf.train.AdamOptimizer(0.001).minimize((self.value_loss+l2_reg), var_list=self.value_weights)
-        self.gr_q_a = tf.gradients(self.value, self.action_input)[0]
-        gradients = tf.gradients(self.action_means, self.weights,
-                                 grad_ys=self.gr_q_a)
-        for i in range(len(gradients)):
-            gradients[i] = -1 * gradients[i]
-        self.train_actor_op = tf.train.AdamOptimizer(self.learning_rate).apply_gradients(zip(gradients, self.weights))
+        td_error = self.better_value - self.critic_value
+        self.value_loss = tf.reduce_mean(td_error ** 2)
+        self.value_train_op = tf.train.AdamOptimizer(self.l_rate_critic).minimize(self.value_loss,
+                                                                                  var_list=self.value_weights)
+        self.train_actor_op = tf.train.AdamOptimizer(self.l_rate).minimize(-tf.reduce_mean(self.value_for_train),
+                                                                           var_list=self.weights)
 
     def save(self, name):
         directory = 'saves/' + name + '/'
@@ -107,30 +104,39 @@ class DDPGTrainer(DDPGNetwork):
 
     def work(self):
         self.variables_server = Redis(port=12000)
-        self.load_weights_from_redis()
         env = self.env
-
+        local_iteration = 0
         if self.scale:
             means = hlp.load_object(self.variables_server.get("means"))
             stds = hlp.load_object(self.variables_server.get("stds"))
             self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
-        st = time.time()
+
         while True:
+            st = time.time()
             self.last_state = env.reset()
+            self.load_weights_from_redis()
             while not env.done and env.timestamp < self.timesteps_per_launch:
-                actions = self.act(env.features)
+                if local_iteration * self.n_workers <= self.random_steps:
+                    actions = env.env.action_space.sample()
+                else:
+                    actions = self.act(env.features)
+                    actions += np.random.normal(0, scale=self.action_noise, size=actions.shape)
                 env.step(actions)
                 transition = hlp.dump_object([self.last_state, env.reward, actions, env.features, env.done])
+                time.sleep(self.step_delay)
                 self.variables_server.lpush('transitions', transition)
                 self.last_state = env.features
-                if time.time() - st > 10:
+                if time.time() - st > 3:
                     st = time.time()
                     self.load_weights_from_redis()
-            self.load_weights_from_redis()
+                local_iteration += 1
+            print("Episode reward: {}".format(env.get_total_reward()), "Length: {}".format(env.timestamp))
             if self.variables_server.llen('transitions') > self.xp_size:
-                self.variables_server.ltrim('transitions', 1, self.xp_size + 1)
+                self.variables_server.ltrim('transitions', 1, self.xp_size)
 
-    def update_target_weights(self, alpha=0.001):
+    def update_target_weights(self, alpha=None):
+        if alpha is None:
+            alpha = self.tau
         value_weights = self.get_value_weights()
         new_weights = self.get_target_value_weights()
         for i in range(len(value_weights)):
@@ -139,14 +145,17 @@ class DDPGTrainer(DDPGNetwork):
 
         weights = self.get_weights()
         new_weights = self.get_target_weights()
+
         for i in range(len(weights)):
             new_weights[i] = new_weights[i] * (1 - alpha) + alpha * weights[i]
+
         self.set_target_weights(new_weights)
 
     def train(self):
         cmd_server = 'redis-server --port 12000'
         p = subprocess.Popen(cmd_server, shell=True, preexec_fn=os.setsid)
         self.variables_server = Redis(port=12000)
+
         if self.scale:
             if self.timestep == 0:
                 print("Time to measure features!")
@@ -168,6 +177,8 @@ class DDPGTrainer(DDPGNetwork):
             self.variables_server.set("stds", hlp.dump_object(stds))
             self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
         print("Let's go!")
+        self.update_target_weights(alpha=1.0)
+
         weights = self.get_weights()
         for i, weight in enumerate(weights):
             self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
@@ -176,65 +187,50 @@ class DDPGTrainer(DDPGNetwork):
                 'config': self.config,
                 'n_workers': self.n_workers
             }
-        self.set_target_value_weights(self.get_value_weights())
-        self.set_target_weights(self.get_weights())
-
+        self.variables_server.ltrim('transitions', 0, 0)
         hlp.launch_workers(worker_args, 'helpers/ddpg_worker.py', wait=False)
 
         time.sleep(5)
         iteration = 0
+
+        start_time = time.time()
+        max_idx = self.variables_server.llen('transitions')
         while True:
-            start_time = time.time()
             obs_batch = []
             next_obs_batch = []
             done_batch = []
             reward_batch = []
             actions_batch = []
-            xp_replay = np.array(self.variables_server.lrange('transitions', 0, self.xp_size))
-            idxs = np.random.randint(len(xp_replay), size=self.batch_size)
-            transitions_batch = xp_replay[idxs]
+            if iteration % 500 == 0 and max_idx < self.xp_size:
+                max_idx = self.variables_server.llen('transitions')
+            idxs = np.random.randint(np.min([self.xp_size, max_idx]), size=self.batch_size)
             transitions = []
             for i in range(self.batch_size):
-                transitions.append(hlp.load_object(transitions_batch[i]))
+                transitions.append(hlp.load_object(self.variables_server.lindex('transitions', idxs[i])))
             for transition in transitions:
                 obs_batch.append(transition[0])
                 reward_batch.append(transition[1])
                 actions_batch.append(transition[2])
                 next_obs_batch.append(transition[3])
                 done_batch.append(transition[4])
-            # print(obs_batch)
-            # print (next_obs_batch)
-            # print (actions_batch)
-            # print (reward_batch)
-            # print (done_batch)
-            # while time.time()-start_time < 1:
-            #     time.sleep(0.001)
-            feed_dict = {self.state_input: np.concatenate(next_obs_batch, axis=0)}
-            old_means = self.sess.run(self.action_target_means, feed_dict)
-            #print (old_means)
-            #print(self.sess.run(self.action_means, feed_dict))
-            feed_dict[self.action_input] = old_means
-            next_state_prediction = self.sess.run(self.target_value, feed_dict)
-            done_batch = np.array(done_batch)
-            #print(next_state_prediction)
+            feed_dict = {
+                self.state_input: np.concatenate(obs_batch, axis=0),
+                self.next_state_input: np.concatenate(next_obs_batch, axis=0),
+                self.action_input: np.array(actions_batch),
+                self.reward_input: np.array(reward_batch),
+                self.done_input: np.array(done_batch)
+            }
 
-            better_prediction = np.array(reward_batch) + self.gamma * (1 - done_batch) * next_state_prediction
-            #print(better_prediction)
-            #1/0
-            actions = self.sess.run(self.action_means, feed_dict)
-            feed_dict = {self.state_input: np.concatenate(obs_batch, axis=0), self.targets['value']: better_prediction,
-                         self.action_input: actions}
-            print(self.sess.run([self.value_loss, self.value_train_op], feed_dict)[0])
-
-            feed_dict = {self.state_input: np.concatenate(obs_batch, axis=0), self.action_input: actions}
+            self.sess.run(self.value_train_op, feed_dict)
             self.sess.run(self.train_actor_op, feed_dict)
-
             self.update_target_weights()
-            iteration += 1
-            if iteration % 100 == 0:
-                weights = self.get_weights()
-                for i, weight in enumerate(weights):
-                    self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+            weights = self.get_weights()
+            for i, weight in enumerate(weights):
+                self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+            if iteration % 1000 == 0:
+                print("Iteration #{}".format(iteration))
+            if iteration % self.test_every == 0:
+                print("Time to test!")
                 worker_args = \
                     {
                         'config': self.config,
@@ -255,9 +251,12 @@ Mean test episode length:  {test_eplengths}
 Max test score:            {max_test}
 Time for iteration:        {tt}
 -------------------------------------------------------------
-                                """.format(
+                                                """.format(
                     test_scores=np.mean(total_rewards),
                     test_eplengths=np.mean(eplens),
                     max_test=np.max(total_rewards),
                     tt=time.time() - start_time
                 ))
+                start_time = time.time()
+
+            iteration += 1

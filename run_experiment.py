@@ -9,7 +9,6 @@ config_name = 'ddpg_lland.json'
 
 with open('configs/' + config_name, 'r') as fp:
     config = json.load(fp)
-
 algo = hlp.agent_from_config(config)
 env = hlp.env_from_config(config)
 config['environment'] = env
