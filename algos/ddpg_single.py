@@ -148,7 +148,6 @@ class DDPGTrainer(DDPGNetwork):
         index_replay = 0
         iteration = 0
         episode = 0
-        episodes = []
         xp_replay_state = np.zeros(shape=(self.xp_size, self.env.get_observation_space()))
         xp_replay_next_state = np.zeros(shape=(self.xp_size, self.env.get_observation_space()))
         xp_replay_reward = np.zeros(shape=(self.xp_size,))
@@ -175,13 +174,12 @@ class DDPGTrainer(DDPGNetwork):
             if env.done or env.timestamp > self.timesteps_per_launch:
                 episode += 1
                 print("Episode #{}".format(episode), env.get_total_reward())
-                episodes.append(env.get_total_reward())
-                np.save('train_episode_rewards', episodes)
+                self.train_scores.append(env.get_total_reward())
                 env.reset()
             self.last_state = env.features
             if iteration % 1000 == 0:
                 print("Iteration #{}".format(iteration))
-
+                self.save(self.config[:-5])
             if iteration > self.random_steps:
                 idxs = np.random.randint(np.min([xp_replay_state.shape[0], iteration]), size=self.batch_size)
                 feed_dict = {

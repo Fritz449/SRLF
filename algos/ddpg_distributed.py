@@ -70,7 +70,6 @@ class DDPGTrainer(DDPGNetwork):
             np.save(directory + 'sumtime', self.sumtime)
 
         np.save(directory + 'timestep', np.array([self.timestep]))
-        np.save(directory + 'train_scores', np.array(self.train_scores))
         print("Agent successfully saved in folder {}".format(directory))
 
     def load(self, name, iteration=None):
@@ -93,7 +92,6 @@ class DDPGTrainer(DDPGNetwork):
                 self.sumtime = np.load(directory + 'sumtime.npy')
 
             self.timestep = np.load(directory + 'timestep.npy')[0]
-            self.train_scores = np.load(directory + 'train_scores.npy').tolist()
             print("Agent successfully loaded from folder {}".format(directory))
         except:
             print("Something is wrong, loading failed")
@@ -229,6 +227,7 @@ class DDPGTrainer(DDPGNetwork):
                 self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
             if iteration % 1000 == 0:
                 print("Iteration #{}".format(iteration))
+                self.save(self.config[:-5])
             if iteration % self.test_every == 0:
                 print("Time to test!")
                 worker_args = \
