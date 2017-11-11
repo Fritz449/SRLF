@@ -15,9 +15,11 @@ class GymAdapterDiscrete:
         self.reset()
 
     def step(self, actions):
-        obs, reward, done, _ = self.env.step(actions[0])
+        if type(actions)==list:
+            actions = actions[0]
+        obs, reward, done, _ = self.env.step(actions)
         self.features = obs.reshape((1, -1))
-        self.reward = reward
+        self.reward = np.clip(reward, -1, 1)
         self.total_reward += reward
         self.done = done
         self.timestamp += 1

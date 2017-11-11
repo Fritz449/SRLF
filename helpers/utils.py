@@ -50,6 +50,9 @@ def agent_from_config(config):
     elif config['trainer'] == 'DDPG-S':
         from algos.ddpg_single import DDPGTrainer
         return DDPGTrainer
+    elif config['trainer'] == 'Rainbow':
+        from algos.rainbow import RainbowTrainer
+        return RainbowTrainer
     else:
         raise Exception
 

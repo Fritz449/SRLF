@@ -227,3 +227,4 @@ Time for iteration:        {tt}
                     start_time = time.time()
 
             iteration += 1
+            self.timestep += 1
