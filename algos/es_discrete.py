@@ -222,7 +222,7 @@ class EvolutionStrategiesTrainer(FFDiscrete):
             paths = []
             for i in range(self.n_workers):
                 paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
-            total_rewards = np.array([path["rewards"].sum() for path in paths])
+            total_rewards = np.array([path["total"] for path in paths])
             eplens = np.array([len(path["rewards"]) for path in paths])
 
             if self.scale:

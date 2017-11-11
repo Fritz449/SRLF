@@ -260,15 +260,23 @@ class TRPODiscreteTrainer(FFDiscrete):
             lossafter, kloldnew = self.sess.run([self.loss, self.KL], feed_dict=feed_dict)
 
             print("Time for testing!")
-            total_rewards = []
-            eplens = []
-            for i in range(self.n_tests):
-                self.env.reset()
-                while not self.env.done and self.env.timestamp < self.timesteps_per_launch:
-                    actions = self.act(self.env.features, exploration=False)
-                    self.env.step(actions)
-                total_rewards.append(self.env.get_total_reward())
-                eplens.append(self.env.timestamp)
+
+            weights = self.get_weights()
+            for i, weight in enumerate(weights):
+                self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+            worker_args = \
+                {
+                    'config': self.config,
+                    'n_workers': self.n_workers,
+                    'n_tasks': self.n_tests // self.n_workers,
+                    'test': True
+                }
+            hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
+            paths = []
+            for i in range(self.n_workers):
+                paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            total_rewards = np.array([path["total"] for path in paths])
+            eplens = np.array([len(path["rewards"]) for path in paths])
 
             if self.scale:
                 stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
