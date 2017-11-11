@@ -3,26 +3,36 @@ import json
 config_name = 'rainbow.json'
 args = \
     {
-        'trainer': 'Rainbow',
+        "learning_rate": 0.0001,
         'config': config_name,
-        'continuous': False,
-        'env_type': 'gym',
-        'env_name': 'CartPole-v0',
-        'max_pathlength': 250,
-        'n_workers': 4,
-        'xp_size': 20000,
-        'batch_size': 64,
-        'n_pre_tasks': 4,
-        'n_hiddens': [64],
-        'n_tests': 10,
-        'n_atoms': 51,
-        'max_magnitude': 20.,
-        'tau': 0.001,
-        'test_every': 5000,
-        'random_steps': 10000,
-        'learning_rate': 0.0001,
-        'gamma': 0.9,
-        'scale': False
+        "xp_size": 100000,
+        "test_every": 20000,
+        "scale": False,
+        "batch_size": 64,
+        "tau": 0.001,
+        "n_pre_tasks": 4,
+        "n_atoms": 101,
+        "n_workers": 4,
+        "double": False,
+        "n_steps": 1,
+        "env_name": "LunarLander-v2",
+        "n_tests": 12,
+        "gamma": 0.99,
+        "dueling": True,
+        "prioritized": True,
+        "prior_alpha": 0.5,
+        "prior_beta": 0.6,
+        "continuous": False,
+        "max_pathlength": 2000,
+        "random_steps": 10000,
+        "env_type": "gym",
+        "n_hiddens": [
+            128, 64
+        ],
+        "noisy_nn": False,
+        "factorized_noise": True,
+        "trainer": "Rainbow",
+        "max_magnitude": 100.0
     }
 print (args)
 with open('configs/' + config_name, 'w') as outfile:

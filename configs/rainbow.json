@@ -1,0 +1,33 @@
+{
+    "n_tests": 12,
+    "learning_rate": 0.0001,
+    "prior_beta": 0.6,
+    "env_name": "LunarLander-v2",
+    "n_atoms": 101,
+    "config": "rainbow.json",
+    "env_type": "gym",
+    "prioritized": true,
+    "n_pre_tasks": 4,
+    "gamma": 0.99,
+    "trainer": "Rainbow",
+    "test_every": 20000,
+    "max_magnitude": 100.0,
+    "prior_alpha": 0.5,
+    "batch_size": 64,
+    "noisy_nn": false,
+    "n_workers": 4,
+    "n_hiddens": [
+        128,
+        64
+    ],
+    "xp_size": 100000,
+    "continuous": false,
+    "max_pathlength": 2000,
+    "factorized_noise": true,
+    "dueling": true,
+    "random_steps": 10000,
+    "tau": 0.001,
+    "scale": false,
+    "double": false,
+    "n_steps": 1
+}

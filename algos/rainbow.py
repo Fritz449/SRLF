@@ -25,10 +25,15 @@ class RainbowTrainer(RainbowNetwork):
         self.scale = args['scale']
         self.gamma = args['gamma']
         self.tau = args['tau']
+        self.double = args['double']
+        self.n_steps = args['n_steps']
         self.max_q_magnitude = args['max_magnitude']
         self.test_every = args['test_every']
         self.random_steps = args['random_steps']
         self.xp_size = args['xp_size']
+        self.prioritized = args['prioritized']
+        self.prior_alpha = args['prior_alpha']
+        self.prior_beta = args['prior_beta']
         self.save_every = args.get('save_every', 1)
         self.clip_error = args.get('clip_error', 10.)
         self.batch_size = args['batch_size']
@@ -46,8 +51,9 @@ class RainbowTrainer(RainbowNetwork):
         action_input = tf.reshape(self.action_input, [-1, 1])
         trainable_probs = tf.gather_nd(self.atom_probs, tf.concat([idx_batch, action_input], axis=1))
         cross_entropy = -self.target_probs*trainable_probs
-        self.loss = tf.reduce_mean(cross_entropy,  axis=1)
-        self.train_op = tf.train.AdamOptimizer(self.l_rate).minimize(self.loss, var_list=self.weights)
+        self.loss = tf.reduce_mean(cross_entropy, axis=1)
+        self.importance_weights = tf.placeholder(tf.float32, shape=(None,))
+        self.train_op = tf.train.AdamOptimizer(self.l_rate).minimize(tf.reduce_mean(self.importance_weights * self.loss), var_list=self.weights)
 
 
     def save(self, name):
@@ -138,63 +144,117 @@ class RainbowTrainer(RainbowNetwork):
         index_replay = 0
         iteration = 0
         episode = 0
+        idxs_range = np.arange(self.xp_size)
         xp_replay_state = np.zeros(shape=(self.xp_size, self.env.get_observation_space()))
         xp_replay_next_state = np.zeros(shape=(self.xp_size, self.env.get_observation_space()))
         xp_replay_reward = np.zeros(shape=(self.xp_size,))
         xp_replay_action = np.zeros(shape=(self.xp_size,))
         xp_replay_terminal = np.zeros(shape=(self.xp_size,))
-
+        if self.prioritized:
+            xp_replay_priority = np.zeros(shape=(self.xp_size,))
+            self.max_prior = 1
         start_time = time.time()
         self.last_state = self.env.reset()
+        discounts = self.gamma ** np.arange(self.n_steps)
+        self.last_rewards = np.zeros(shape=(self.n_steps,))
+        self.last_states = np.zeros(shape=(self.n_steps, self.n_features))
+        self.last_actions = np.zeros(shape=(self.n_steps, ))
+        buffer_index = 0
         env = self.env
         while True:
             if iteration <= self.random_steps:
                 actions = env.env.action_space.sample()
             else:
                 actions = self.act(env.features, exploration=True)
-
+            self.last_states[buffer_index] = env.features.reshape(-1)
+            self.last_actions[buffer_index] = actions
             env.step([actions])
-            xp_replay_state[index_replay] = self.last_state.reshape(-1)
-            xp_replay_next_state[index_replay] = env.features.reshape(-1)
-            xp_replay_reward[index_replay] = env.reward
-            xp_replay_action[index_replay] = actions
-            xp_replay_terminal[index_replay] = env.done
-            index_replay = (index_replay + 1) % self.xp_size
+            self.last_rewards[buffer_index] = env.reward
+            buffer_index = (buffer_index + 1) % self.n_steps
+
+            if env.timestamp >= self.n_steps:
+                xp_replay_state[index_replay] = np.copy(self.last_states[buffer_index])
+                xp_replay_next_state[index_replay] = env.features.reshape(-1)
+                discounted_return = np.sum(discounts*self.last_rewards[np.roll(np.arange(self.n_steps), -(buffer_index))])
+                xp_replay_reward[index_replay] = discounted_return
+                xp_replay_action[index_replay] = self.last_actions[buffer_index]
+                xp_replay_terminal[index_replay] = env.done
+                if self.prioritized:
+                    xp_replay_priority[index_replay] = self.max_prior
+                index_replay = (index_replay + 1) % self.xp_size
+
             if env.done or env.timestamp > self.timesteps_per_launch:
                 episode += 1
                 print("Episode #{}".format(episode), env.get_total_reward())
                 self.train_scores.append(env.get_total_reward())
-                np.save('train_scores', self.train_scores)
+
+                for i in range(1, self.n_steps):
+                    buffer_index = (buffer_index + 1) % self.n_steps
+
+                    xp_replay_state[index_replay] = np.copy(self.last_states[buffer_index])
+                    xp_replay_next_state[index_replay] = env.features.reshape(-1)
+                    discounted_return = np.sum(
+                        discounts[:self.n_steps-i] * self.last_rewards[np.roll(np.arange(self.n_steps), -(buffer_index))[:self.n_steps-i]])
+                    xp_replay_reward[index_replay] = discounted_return
+                    xp_replay_action[index_replay] = self.last_actions[buffer_index]
+                    xp_replay_terminal[index_replay] = env.done
+                    index_replay = (index_replay + 1) % self.xp_size
                 env.reset()
+                self.last_rewards = np.zeros(shape=(self.n_steps,))
+                self.last_states = np.zeros(shape=(self.n_steps, self.n_features))
+                self.last_actions = np.zeros(shape=(self.n_steps,))
+                buffer_index = 0
+
             self.last_state = env.features
             if iteration % 1000 == 0:
                 print("Iteration #{}".format(iteration))
                 self.save(self.config[:-5])
 
             if iteration > self.random_steps:
-                start_time = time.time()
-                idxs = np.random.randint(np.min([xp_replay_state.shape[0], iteration]), size=self.batch_size)
+                if self.prioritized:
+                    max_id = np.min([xp_replay_state.shape[0], iteration])
+                    probs = xp_replay_priority[:max_id]/np.sum(xp_replay_priority[:max_id])
+                    idxs = np.random.choice(idxs_range[:max_id], size=self.batch_size, p=probs)
+                    importance_weights = (1/(max_id*probs[idxs]))**self.prior_beta
+                else:
+                    idxs = np.random.randint(np.min([xp_replay_state.shape[0], iteration]), size=self.batch_size)
+                    importance_weights = np.ones(shape=(self.batch_size,))
 
                 state_batch = xp_replay_state[idxs]
                 next_state_batch = xp_replay_next_state[idxs]
                 action_batch = xp_replay_action[idxs]
                 reward_batch = xp_replay_reward[idxs]
                 done_batch = xp_replay_terminal[idxs]
+
                 feed_dict = {
                     self.state_input: state_batch,
                     self.next_state_input: next_state_batch,
                     self.action_input: action_batch,
+                    self.importance_weights: importance_weights
                 }
                 target_atom_probs = self.sess.run(self.target_atom_probs, feed_dict)
                 target_atom_probs = np.exp(target_atom_probs)
-                target_q_values = target_atom_probs * np.tile(np.arange(self.n_atoms).reshape((1, 1, self.n_atoms)), [self.batch_size, 1, 1])
-                target_q_values = np.sum(target_q_values, axis=2)
-                target_greedy_actions = np.argmax(target_q_values, axis=1).astype(np.int32).reshape((-1, 1))
-                target_probs = target_atom_probs[np.arange(self.batch_size).reshape((-1, 1)), target_greedy_actions]
+
+                if not self.double:
+                    target_q_values = target_atom_probs * np.tile(np.arange(self.n_atoms).reshape((1, 1, self.n_atoms)), [self.batch_size, 1, 1])
+                    target_q_values = np.sum(target_q_values, axis=2)
+                    target_greedy_actions = np.argmax(target_q_values, axis=1).astype(np.int32).reshape((-1, 1))
+                    target_probs = target_atom_probs[np.arange(self.batch_size).reshape((-1, 1)), target_greedy_actions]
+                else:
+                    feed_dict[self.state_input] = next_state_batch
+                    atom_probs = self.sess.run(self.atom_probs, feed_dict)
+                    atom_probs = np.exp(atom_probs)
+                    q_values = atom_probs * np.tile(np.arange(self.n_atoms).reshape((1, 1, self.n_atoms)),
+                                                                  [self.batch_size, 1, 1])
+                    q_values = np.sum(q_values, axis=2)
+                    greedy_actions = np.argmax(q_values, axis=1).astype(np.int32).reshape((-1, 1))
+                    target_probs = target_atom_probs[np.arange(self.batch_size).reshape((-1, 1)), greedy_actions]
+                    feed_dict[self.state_input] = state_batch
+
                 atom_values = np.arange(self.n_atoms, dtype=np.float32).reshape((-1, self.n_atoms))
                 atom_values = 2 * self.max_q_magnitude * (
                 np.tile(atom_values, [self.batch_size, 1]) / (self.n_atoms - 1) - 0.5)
-                atom_new_values = np.clip(self.gamma * atom_values * (1-done_batch).reshape(-1, 1) + reward_batch.reshape((-1, 1)),
+                atom_new_values = np.clip((self.gamma**self.n_steps) * atom_values * (1-done_batch).reshape(-1, 1) + reward_batch.reshape((-1, 1)),
                                                    - self.max_q_magnitude, self.max_q_magnitude)
                 new_positions = ((atom_new_values / (2 * self.max_q_magnitude) + 0.5) * (self.n_atoms - 1)).reshape((-1))
                 lower = np.floor(new_positions).astype(np.int32).reshape(-1)
@@ -206,7 +266,9 @@ class RainbowTrainer(RainbowNetwork):
 
                 final_target_probs = np.sum(final_target_probs, axis=2)[:, :-1]
                 feed_dict[self.target_probs] = final_target_probs
-                self.sess.run(self.train_op, feed_dict)
+                KLs = self.sess.run([self.loss, self.train_op], feed_dict)[0]
+                if self.prioritized:
+                    xp_replay_priority[idxs] = KLs ** self.prior_alpha
                 self.update_target_weights()
 
                 if iteration % self.test_every == 0:
@@ -225,7 +287,7 @@ class RainbowTrainer(RainbowNetwork):
                     paths = []
                     for i in range(self.n_workers):
                         paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
-                    total_rewards = np.array([path["rewards"].sum() for path in paths])
+                    total_rewards = np.array([path["total"] for path in paths])
                     eplens = np.array([len(path["rewards"]) for path in paths])
                     print("""
 -------------------------------------------------------------

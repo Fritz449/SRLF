@@ -88,6 +88,7 @@ while timestep < timesteps_per_worker and i_task < n_tasks:
     path["sumobs"] = sums
     path["sumsqrobs"] = sumsqrs
     path["terminated"] = env.done
+    path["total"] = env.get_total_reward()
     paths.append(path)
     i_task+=1
 variables_server.set("paths_{}".format(FLAGS.worker_index), hlp.dump_object(paths))

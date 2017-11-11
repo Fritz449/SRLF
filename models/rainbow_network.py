@@ -5,7 +5,7 @@ import sys
 
 sys.path.append(os.path.realpath(".."))
 
-from helpers.layers import denselayer
+from helpers.layers import denselayer, noisy_denselayer
 from models.base_model import BaseModel
 import numpy as np
 
@@ -16,6 +16,9 @@ class RainbowNetwork(BaseModel):
         self.gamma = args['gamma']
         self.n_hiddens = args['n_hiddens']
         self.n_actions = args['n_actions']
+        self.dueling = args['dueling']
+        self.noisy = args['noisy_nn']
+        self.factorized_noise = args['factorized_noise']
         if len(self.n_actions) > 1:
             print("Unfortunately, Rainbow doesn't support multiple actions.")
             raise Exception
@@ -44,13 +47,35 @@ class RainbowNetwork(BaseModel):
         weights = []
         with tf.variable_scope(name):
             for index, n_hidden in enumerate(self.n_hiddens):
-                hidden, layer_weights = denselayer("hidden_{}".format(index), hidden, n_hidden, self.nonlinearity)
+                if self.noisy:
+                    hidden, layer_weights = noisy_denselayer("hidden_{}".format(index), hidden, n_hidden, self.nonlinearity, self.factorized_noise)
+                else:
+                    hidden, layer_weights = denselayer("hidden_{}".format(index), hidden, n_hidden, self.nonlinearity)
                 weights += layer_weights
+            if self.dueling:
+                if self.noisy:
+                    atom_probs_advs, layer_weights = noisy_denselayer("atom_probs", hidden, self.n_actions * self.n_atoms, factorized=self.factorized_noise)
+                else:
+                    atom_probs_advs, layer_weights = denselayer("atom_probs", hidden, self.n_actions * self.n_atoms)
+                atom_probs_advs = tf.reshape(atom_probs_advs, [-1, self.n_actions, self.n_atoms])
+                weights += layer_weights
+                if self.noisy:
+                    atom_probs_values, layer_weights = noisy_denselayer("atom_probs_values", hidden, self.n_atoms, factorized=self.factorized_noise)
+                else:
+                    atom_probs_values, layer_weights = denselayer("atom_probs_values", hidden, self.n_atoms)
+                atom_probs_values = tf.reshape(atom_probs_values, [-1, 1, self.n_atoms])
+                weights += layer_weights
+                atom_probs_logs = atom_probs_values + atom_probs_advs - tf.reduce_mean(atom_probs_advs, axis=1, keep_dims=True)
+                atom_probs = tf.nn.log_softmax(atom_probs_logs, dim=2)
+            else:
+                if self.noisy:
+                    atom_probs_logs, layer_weights = noisy_denselayer("atom_probs", hidden, self.n_actions * self.n_atoms, factorized=self.factorized_noise)
+                else:
+                    atom_probs_logs, layer_weights = denselayer("atom_probs", hidden, self.n_actions * self.n_atoms)
 
-            atom_probs_logs, layer_weights = denselayer("atom_probs", hidden, self.n_actions * self.n_atoms)
-            atom_probs = tf.nn.log_softmax(tf.reshape(atom_probs_logs, [-1, self.n_actions, self.n_atoms]), dim=2)
+                atom_probs = tf.nn.log_softmax(tf.reshape(atom_probs_logs, [-1, self.n_actions, self.n_atoms]), dim=2)
 
-            weights += layer_weights
+                weights += layer_weights
             weight_phs = [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
         return atom_probs, weights, weight_phs
 
@@ -74,7 +99,7 @@ class RainbowNetwork(BaseModel):
                                                                                                    self.good_next_input)
 
     def act(self, obs, exploration=False):
-        if exploration and np.random.randint(100)<5:
+        if exploration and np.random.randint(100)<1:
             greedy_action = np.random.randint(self.n_actions)
         else:
             atom_probs = self.sess.run(self.atom_probs, feed_dict={self.state_input: obs})
