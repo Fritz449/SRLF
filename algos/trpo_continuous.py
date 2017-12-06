@@ -20,13 +20,14 @@ class TRPOContinuousTrainer(FFContinuous):
         self.env = args['environment']
         self.timesteps_per_launch = args['max_pathlength']
         self.n_workers = args['n_workers']
+        self.distributed = args['distributed']
         self.timesteps_per_batch = args['timesteps_batch']
-        self.n_pre_tasks = args['n_pre_tasks']
         self.n_tests = args['n_tests']
         self.max_kl = args['max_kl']
-        self.ranks = args['ranks']
+        self.normalize = args['normalize']
         self.scale = args['scale']
         self.gamma = args['gamma']
+        self.value_updates = args['value_updates']
         self.save_every = args.get('save_every', 1)
         self.sums = self.sumsqrs = self.sumtime = 0
         self.timestep = 0
@@ -34,7 +35,12 @@ class TRPOContinuousTrainer(FFContinuous):
         self.create_internal()
         self.init_weights()
         self.train_scores = []
+        self.test_scores = []
         np.set_printoptions(precision=6)
+
+        # Worker parameters:
+        self.id_worker = args['id_worker']
+        self.test_mode = args['test_mode']
 
     def create_internal(self):
         self.targets = {
@@ -102,13 +108,14 @@ class TRPOContinuousTrainer(FFContinuous):
             value = self.sess.run(tensor)
             np.save(directory + 'weight_{}'.format(i), value)
 
-        if self.scale:
+        if self.scale != 'off':
             np.save(directory + 'sums', self.sums)
             np.save(directory + 'sumsquares', self.sumsqrs)
             np.save(directory + 'sumtime', self.sumtime)
 
         np.save(directory + 'timestep', np.array([self.timestep]))
         np.save(directory + 'train_scores', np.array(self.train_scores))
+        np.save(directory + 'test_scores', np.array(self.test_scores))
         print("Agent successfully saved in folder {}".format(directory))
 
     def load(self, name, iteration=None):
@@ -125,13 +132,14 @@ class TRPOContinuousTrainer(FFContinuous):
                 arr = np.load(directory + 'weight_{}.npy'.format(i))
                 self.sess.run(tensor.assign(arr))
 
-            if self.scale:
+            if self.scale != 'off':
                 self.sums = np.load(directory + 'sums.npy')
                 self.sumsqrs = np.load(directory + 'sumsquares.npy')
                 self.sumtime = np.load(directory + 'sumtime.npy')
 
             self.timestep = np.load(directory + 'timestep.npy')[0]
             self.train_scores = np.load(directory + 'train_scores.npy').tolist()
+            self.test_scores = np.load(directory + 'test_scores.npy').tolist()
             print("Agent successfully loaded from folder {}".format(directory))
         except:
             print("Something is wrong, loading failed")
@@ -139,15 +147,83 @@ class TRPOContinuousTrainer(FFContinuous):
     def init_weights(self):
         self.sess.run(tf.global_variables_initializer())
         init_weights = [self.sess.run(w) for w in self.weights]
-        for i in range(len(init_weights)):
-            if self.std == "Param":
-                for i in range(len(init_weights))[-len(self.n_actions):]:
-                    init_weights[i] /= 10.
-            if self.std == "Train":
-                for i in range(len(init_weights))[-2*len(self.n_actions)::2]:
-                    init_weights[i] /= 10.
+        if self.std == "Param":
+            for i in range(len(init_weights))[-len(self.n_actions):]:
+                init_weights[i] /= 10.
+        if self.std == "Train":
+            for i in range(len(init_weights))[-2*len(self.n_actions)::2]:
+                init_weights[i] /= 10.
 
         self.set_weights(init_weights)
+
+    def make_rollout(self):
+        variables_server = Redis(port=12000)
+        if self.scale != 'off':
+            try:
+                means = hlp.load_object(variables_server.get("means"))
+                stds = hlp.load_object(variables_server.get("stds"))
+                self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
+            except:
+                pass
+        try:
+            weights = [hlp.load_object(variables_server.get("weight_{}".format(i))) for i in
+                       range(len(self.weights))]
+            self.set_weights(weights)
+        except:
+            pass
+        env = self.env
+        if self.test_mode:
+            n_tasks = self.n_tests
+            timesteps_per_worker = 100000000
+        else:
+            n_tasks = 10000
+            timesteps_per_worker = self.timesteps_per_batch // self.n_workers
+
+        timestep = 0
+        i_task = 0
+
+        paths = []
+        while timestep < timesteps_per_worker and i_task < n_tasks:
+            path = {}
+            observations, action_tuples, rewards, dist_tuples, timestamps = [], [], [], [], []
+            sums = np.zeros((1, env.get_observation_space()))
+            sumsqrs = np.zeros(sums.shape)
+
+            env.reset()
+            while not env.done and env.timestamp < self.timesteps_per_launch:
+                sums += env.features
+                sumsqrs += np.square(env.features)
+                observations.append(env.features[0])
+                timestamps.append(env.timestamp)
+
+                if not self.test_mode:
+                    actions, dist_tuple = self.act(env.features, return_dists=True)
+                    dist_tuples.append(dist_tuple)
+                else:
+                    actions = self.act(env.features, exploration=False)
+                env.step(actions)
+                timestep += 1
+
+                action_tuples.append(actions)
+                rewards.append(env.reward)
+
+            path["observations"] = np.array(observations)
+            path["action_tuples"] = np.array(action_tuples)
+            path["rewards"] = np.array(rewards)
+            if not self.test_mode:
+                path["dist_tuples"] = np.array(dist_tuples)
+            path["timestamps"] = np.array(timestamps)
+            path["sums"] = sums
+            path["sumsqrs"] = sumsqrs
+            path["terminated"] = env.done
+            path["total"] = env.get_total_reward()
+            paths.append(path)
+            i_task += 1
+
+        if self.distributed:
+            variables_server.set("paths_{}".format(self.id_worker), hlp.dump_object(paths))
+        else:
+            self.paths = paths
 
     def train(self):
         cmd_server = 'redis-server --port 12000'
@@ -155,19 +231,29 @@ class TRPOContinuousTrainer(FFContinuous):
         self.variables_server = Redis(port=12000)
         means = "-"
         stds = "-"
-        if self.scale:
+        if self.scale != 'off':
             if self.timestep == 0:
                 print("Time to measure features!")
-                worker_args = \
-                    {
-                        'config': self.config,
-                        'n_workers': self.n_workers
-                    }
-                hlp.launch_workers(worker_args, 'helpers/measure_features.py')
-                for i in range(self.n_workers * self.n_pre_tasks):
-                    self.sums += hlp.load_object(self.variables_server.get("sum_" + str(i)))
-                    self.sumsqrs += hlp.load_object(self.variables_server.get("sumsqr_" + str(i)))
-                    self.sumtime += hlp.load_object(self.variables_server.get("time_" + str(i)))
+                if self.distributed:
+                    worker_args = \
+                        {
+                            'config': self.config,
+                            'test_mode': False,
+                        }
+                    hlp.launch_workers(worker_args, self.n_workers)
+                    paths = []
+                    for i in range(self.n_workers):
+                        paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+                else:
+                    self.test_mode = False
+                    self.make_rollout()
+                    paths = self.paths
+
+                for path in paths:
+                    self.sums += path["sumobs"]
+                    self.sumsqrs += path["sumsqrobs"]
+                    self.sumtime += path["observations"].shape[0]
+
             stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
             means = self.sums / self.sumtime
             print("Init means: {}".format(means))
@@ -178,19 +264,24 @@ class TRPOContinuousTrainer(FFContinuous):
         while True:
             print("Iteration {}".format(self.timestep))
             start_time = time.time()
-            weights = self.get_weights()
-            for i, weight in enumerate(weights):
-                self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
-            worker_args = \
-                {
-                    'config': self.config,
-                    'n_workers': self.n_workers
-                }
-            hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
 
-            paths = []
-            for i in range(self.n_workers):
-                paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            if self.distributed:
+                weights = self.get_weights()
+                for i, weight in enumerate(weights):
+                    self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+                worker_args = \
+                    {
+                        'config': self.config,
+                        'test_mode': False,
+                    }
+                hlp.launch_workers(worker_args, self.n_workers)
+                paths = []
+                for i in range(self.n_workers):
+                    paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            else:
+                self.test_mode = False
+                self.make_rollout()
+                paths = self.paths
 
             observations = np.concatenate([path["observations"] for path in paths])
             actions = np.concatenate([path["action_tuples"] for path in paths])
@@ -214,12 +305,12 @@ class TRPOContinuousTrainer(FFContinuous):
             action_means = np.array(action_means)
             action_stds = np.array(action_stds)
 
-            if self.ranks:
+            if self.normalize == 'ranks':
                 ranks = np.zeros_like(advantages)
                 ranks[np.argsort(advantages)] = np.arange(ranks.shape[0], dtype=np.float32) / (ranks.shape[0] - 1)
                 ranks -= 0.5
                 advantages = ranks[:]
-            else:
+            elif self.normalize == 'center':
                 advantages -= np.mean(advantages)
                 advantages /= (np.std(advantages, ddof=1) + 0.001)
 
@@ -230,13 +321,14 @@ class TRPOContinuousTrainer(FFContinuous):
                          self.targets["old_std"]: action_stds,
                          self.targets["action"]: actions}
 
-            for i in range(5):
+            for i in range(self.value_updates):
                 self.sess.run(self.value_train_op, feed_dict)
 
             train_rewards = np.array([path["rewards"].sum() for path in paths])
             train_lengths = np.array([len(path["rewards"]) for path in paths])
 
             thprev = self.get_flat()
+
             def fisher_vector_product(p):
                 feed_dict[self.targets["flat_tangent"]] = p
                 return self.sess.run(self.fisher_vector_product, feed_dict) + 0.1 * p
@@ -247,6 +339,7 @@ class TRPOContinuousTrainer(FFContinuous):
             shs = .5 * stepdir.dot(fisher_vector_product(stepdir))
             lm = np.sqrt(shs / self.max_kl)
             fullstep = stepdir / (lm + 1e-18)
+
             def loss_kl(th):
                 self.set_from_flat(th)
                 return self.sess.run([self.loss, self.KL], feed_dict=feed_dict)
@@ -258,24 +351,28 @@ class TRPOContinuousTrainer(FFContinuous):
 
             print("Time for testing!")
 
-            weights = self.get_weights()
-            for i, weight in enumerate(weights):
-                self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
-            worker_args = \
-                {
-                    'config': self.config,
-                    'n_workers': self.n_workers,
-                    'n_tasks': self.n_tests // self.n_workers,
-                    'test': True
-                }
-            hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
-            paths = []
-            for i in range(self.n_workers):
-                paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            if self.distributed:
+                weights = self.get_weights()
+                for i, weight in enumerate(weights):
+                    self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+                worker_args = \
+                    {
+                        'config': self.config,
+                        'test_mode': True,
+                    }
+                hlp.launch_workers(worker_args, self.n_workers)
+                paths = []
+                for i in range(self.n_workers):
+                    paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+            else:
+                self.test_mode = True
+                self.make_rollout()
+                paths = self.paths
+
             total_rewards = np.array([path["total"] for path in paths])
             eplens = np.array([len(path["rewards"]) for path in paths])
 
-            if self.scale:
+            if self.scale == 'full':
                 stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
                 means = self.sums / self.sumtime
                 self.variables_server.set("means", hlp.dump_object(means))
@@ -309,7 +406,8 @@ Time for iteration:        {tt}
                 loss=lossafter,
                 tt=time.time() - start_time
             ))
-            if self.timestep % self.save_every == 0:
-                self.save(self.config[:-5])
             self.timestep += 1
             self.train_scores.append(np.mean(train_rewards))
+            self.test_scores.append(np.mean(total_rewards))
+            if self.timestep % self.save_every == 0:
+                self.save(self.config[:-5])

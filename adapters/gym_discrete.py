@@ -15,7 +15,7 @@ class GymAdapterDiscrete:
         self.reset()
 
     def step(self, actions):
-        if type(actions)==list:
+        if type(actions) == list or type(actions) == np.ndarray:
             actions = actions[0]
         obs, reward, done, _ = self.env.step(actions)
         self.features = obs.reshape((1, -1))

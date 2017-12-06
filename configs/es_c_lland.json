@@ -6,16 +6,16 @@
     "env_name": "LunarLanderContinuous-v2",
     "max_pathlength": 1000,
     "noise_scale": 0.3,
-    "n_workers": 4,
-    "n_tasks": 256,
+    "distributed": true,
+    "normalize": "ranks",
+    "n_workers": 6,
+    "n_tasks": 128,
     "n_pre_tasks": 4,
     "n_hiddens": [
-        512
+        256
     ],
-    "n_tests": 10,
+    "n_tests": 4,
     "learning_rate": 0.01,
     "momentum": true,
-    "std": "Const",
-    "ranks": true,
-    "scale": true
+    "scale": "full"
 }

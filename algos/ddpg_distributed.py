@@ -41,8 +41,14 @@ class DDPGTrainer(DDPGNetwork):
         self.timestep = 0
         self.create_internal()
         self.sess.run(tf.global_variables_initializer())
+
         self.train_scores = []
+        self.test_scores = []
         np.set_printoptions(precision=6)
+
+        # Worker parameters:
+        self.id_worker = args['id_worker']
+        self.test_mode = args['test_mode']
 
     def create_internal(self):
         td_error = self.better_value - self.critic_value
@@ -60,9 +66,8 @@ class DDPGTrainer(DDPGNetwork):
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-        for i, tensor in enumerate(tf.global_variables()):
-            value = self.sess.run(tensor)
-            np.save(directory + 'weight_{}'.format(i), value)
+        for i, w in enumerate(tf.global_variables()):
+            np.save(directory + 'weight_{}'.format(i), self.sess.run(w))
 
         if self.scale:
             np.save(directory + 'sums', self.sums)
@@ -70,6 +75,9 @@ class DDPGTrainer(DDPGNetwork):
             np.save(directory + 'sumtime', self.sumtime)
 
         np.save(directory + 'timestep', np.array([self.timestep]))
+        np.save(directory + 'train_scores', np.array(self.train_scores))
+        np.save(directory + 'test_scores', np.array(self.test_scores))
+
         print("Agent successfully saved in folder {}".format(directory))
 
     def load(self, name, iteration=None):
@@ -81,10 +89,10 @@ class DDPGTrainer(DDPGNetwork):
             if iteration is None:
                 iteration = np.max([int(x[10:]) for x in [dir for dir in os.walk(directory)][0][1]])
             directory += 'iteration_{}'.format(iteration) + '/'
-
-            for i, tensor in enumerate(tf.global_variables()):
-                arr = np.load(directory + 'weight_{}.npy'.format(i))
-                self.sess.run(tensor.assign(arr))
+            weights = [np.zeros(shape=w.get_shape()) for w in self.weights]
+            for i, w in enumerate(tf.global_variables()):
+                weights[i] = np.load(directory + 'weight_{}.npy'.format(i))
+            self.set_weights(weights)
 
             if self.scale:
                 self.sums = np.load(directory + 'sums.npy')
@@ -92,6 +100,9 @@ class DDPGTrainer(DDPGNetwork):
                 self.sumtime = np.load(directory + 'sumtime.npy')
 
             self.timestep = np.load(directory + 'timestep.npy')[0]
+            self.train_scores = np.load(directory + 'train_scores.npy').tolist()
+            self.test_scores = np.load(directory + 'test_scores.npy').tolist()
+
             print("Agent successfully loaded from folder {}".format(directory))
         except:
             print("Something is wrong, loading failed")
@@ -102,12 +113,21 @@ class DDPGTrainer(DDPGNetwork):
 
     def work(self):
         self.variables_server = Redis(port=12000)
+        if self.scale != 'off':
+            try:
+                means = hlp.load_object(self.variables_server.get("means"))
+                stds = hlp.load_object(self.variables_server.get("stds"))
+                self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
+            except:
+                pass
+        try:
+            weights = [hlp.load_object(self.variables_server.get("weight_{}".format(i))) for i in
+                       range(len(self.weights))]
+            self.set_weights(weights)
+        except:
+            pass
         env = self.env
         local_iteration = 0
-        if self.scale:
-            means = hlp.load_object(self.variables_server.get("means"))
-            stds = hlp.load_object(self.variables_server.get("stds"))
-            self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
 
         while True:
             st = time.time()
@@ -132,6 +152,54 @@ class DDPGTrainer(DDPGNetwork):
             if self.variables_server.llen('transitions') > self.xp_size:
                 self.variables_server.ltrim('transitions', 1, self.xp_size)
 
+    def make_rollout(self):
+        variables_server = Redis(port=12000)
+        if self.scale != 'off':
+            try:
+                means = hlp.load_object(variables_server.get("means"))
+                stds = hlp.load_object(variables_server.get("stds"))
+                self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
+            except:
+                pass
+        try:
+            weights = [hlp.load_object(variables_server.get("weight_{}".format(i))) for i in
+                       range(len(self.weights))]
+            self.set_weights(weights)
+        except:
+            pass
+        env = self.env
+        if self.test_mode:
+            n_tasks = self.n_tests
+        else:
+            n_tasks = self.n_pre_tasks
+        i_task = 0
+        paths = []
+        while i_task < n_tasks:
+            path = {}
+            rewards = []
+            sums = np.zeros((1, env.get_observation_space()))
+            sumsqrs = np.zeros(sums.shape)
+
+            env.reset()
+            while not env.done and env.timestamp < self.timesteps_per_launch:
+                sums += env.features
+                sumsqrs += np.square(env.features)
+                if not self.test_mode:
+                    actions = self.act(env.features, exploration=True)
+                else:
+                    actions = self.act(env.features, exploration=False)
+                env.step(actions)
+                rewards.append(env.reward)
+
+            path["rewards"] = rewards
+            path["sumobs"] = sums
+            path["sumsqrobs"] = sumsqrs
+            path["total"] = env.get_total_reward()
+            paths.append(path)
+            i_task += 1
+
+        variables_server.set("paths_{}".format(self.id_worker), hlp.dump_object(paths))
+
     def update_target_weights(self, alpha=None):
         if alpha is None:
             alpha = self.tau
@@ -153,20 +221,26 @@ class DDPGTrainer(DDPGNetwork):
         cmd_server = 'redis-server --port 12000'
         p = subprocess.Popen(cmd_server, shell=True, preexec_fn=os.setsid)
         self.variables_server = Redis(port=12000)
-
-        if self.scale:
+        means = "-"
+        stds = "-"
+        if self.scale != 'off':
             if self.timestep == 0:
                 print("Time to measure features!")
                 worker_args = \
                     {
                         'config': self.config,
-                        'n_workers': self.n_workers
+                        'test_mode': False,
                     }
-                hlp.launch_workers(worker_args, 'helpers/measure_features.py')
-                for i in range(self.n_workers * self.n_pre_tasks):
-                    self.sums += hlp.load_object(self.variables_server.get("sum_" + str(i)))
-                    self.sumsqrs += hlp.load_object(self.variables_server.get("sumsqr_" + str(i)))
-                    self.sumtime += hlp.load_object(self.variables_server.get("time_" + str(i)))
+                hlp.launch_workers(worker_args, self.n_workers)
+                paths = []
+                for i in range(self.n_workers):
+                    paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+
+                for path in paths:
+                    self.sums += path["sumobs"]
+                    self.sumsqrs += path["sumsqrobs"]
+                    self.sumtime += len(path["rewards"])
+
             stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
             means = self.sums / self.sumtime
             print("Init means: {}".format(means))
@@ -183,10 +257,11 @@ class DDPGTrainer(DDPGNetwork):
         worker_args = \
             {
                 'config': self.config,
-                'n_workers': self.n_workers
+                'test_mode': False,
             }
+        hlp.launch_workers(worker_args, self.n_workers, command='work', wait=False)
+
         self.variables_server.ltrim('transitions', 0, 0)
-        hlp.launch_workers(worker_args, 'helpers/ddpg_worker.py', wait=False)
 
         time.sleep(5)
         iteration = 0
@@ -229,34 +304,45 @@ class DDPGTrainer(DDPGNetwork):
                 print("Iteration #{}".format(iteration))
                 self.save(self.config[:-5])
             if iteration % self.test_every == 0:
-                print("Time to test!")
+                print("Time for testing!")
                 worker_args = \
                     {
                         'config': self.config,
-                        'n_workers': self.n_workers,
-                        'n_tasks': self.n_tests // self.n_workers,
-                        'test': True
+                        'test_mode': True,
                     }
-                hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
+                hlp.launch_workers(worker_args, self.n_workers)
                 paths = []
                 for i in range(self.n_workers):
                     paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+
                 total_rewards = np.array([path["total"] for path in paths])
                 eplens = np.array([len(path["rewards"]) for path in paths])
+
+                if self.scale == 'full':
+                    stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
+                    means = self.sums / self.sumtime
+                    self.variables_server.set("means", hlp.dump_object(means))
+                    self.variables_server.set("stds", hlp.dump_object(stds))
+                    self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
+
                 print("""
--------------------------------------------------------------
-Mean test score:           {test_scores}
-Mean test episode length:  {test_eplengths}
-Max test score:            {max_test}
-Time for iteration:        {tt}
--------------------------------------------------------------
-                                                """.format(
+                -------------------------------------------------------------
+                Mean test score:           {test_scores}
+                Mean test episode length:  {test_eplengths}
+                Max test score:            {max_test}
+                Mean of features:          {means}
+                Std of features:           {stds}
+                Time for iteration:        {tt}
+                -------------------------------------------------------------
+                                """.format(
+                    means=means,
+                    stds=stds,
                     test_scores=np.mean(total_rewards),
                     test_eplengths=np.mean(eplens),
                     max_test=np.max(total_rewards),
                     tt=time.time() - start_time
                 ))
-                start_time = time.time()
+                self.test_scores.append(np.mean(total_rewards))
 
             iteration += 1
             self.timestep += 1

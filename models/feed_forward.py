@@ -16,7 +16,6 @@ class FeedForward(BaseModel):
         self.n_hiddens = args['n_hiddens']
         self.n_features = args['n_features']
         self.critic = args.get('critic')
-        self.sep_critic = args.get('sep_critic', True)
         self.nonlinearity = args.get('nonlin', tf.nn.tanh)
         self.state_input = tf.placeholder(tf.float32, shape=(None, self.n_features))
         self.value_weights = []
@@ -35,34 +34,20 @@ class FeedForward(BaseModel):
         self.norm_set_op = [mean.assign(mean_ph), std.assign(std_ph)]
         self.norm_phs = [mean_ph, std_ph]
         hidden = (input - mean) / (std + 1e-5)
-        hidden = tf.clip_by_value(hidden, -5, 5)
+        hidden = tf.clip_by_value(hidden, -20, 20)
         self.hidden = hidden
 
         for index, n_hidden in enumerate(self.n_hiddens):
             hidden, weights = denselayer("hidden_{}".format(index), hidden, n_hidden, self.nonlinearity)
             self.weights += weights
-            self.weight_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
+            self.weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
             self.hidden = hidden
 
-        if self.critic:
-            if self.sep_critic:
-                hidden = self.state_input
-                for index, n_hidden in enumerate(self.n_hiddens):
-                    hidden, weights = denselayer("hidden_critic_{}".format(index), hidden, n_hidden, self.nonlinearity)
-                    self.value_weights += weights
-                    self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-                self.value, weights = denselayer("value", hidden, 1)
-                self.value = tf.reshape(self.value, [-1])
-                self.value_weights += weights
-                self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-            else:
-                hidden = self.hidden
-                self.value, weights = denselayer("value", hidden, 1)
-                self.value = tf.reshape(self.value, [-1])
-                self.value_weights += weights
-                self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
-        else:
-            self.value = 0.
+        hidden = self.hidden
+        self.value, weights = denselayer("value", hidden, 1)
+        self.value = tf.reshape(self.value, [-1])
+        self.value_weights += weights
+        self.value_weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
 
 
 class FFDiscrete(FeedForward):
@@ -70,7 +55,7 @@ class FFDiscrete(FeedForward):
         FeedForward.__init__(self, sess, args)
         self.n_actions = args['n_actions']
         self.create_output()
-        for weight, ph in zip(self.weights, self.weight_phs):
+        for weight, ph in zip(self.weights, self.weights_phs):
             self.set_op.append(weight.assign(ph))
 
     def create_output(self):
@@ -80,7 +65,7 @@ class FFDiscrete(FeedForward):
             log_probs, weights = denselayer("lob_probs_{}".format(index), self.hidden, n, tf.nn.log_softmax)
             self.action_logprobs.append(log_probs)
             self.weights += weights
-            self.weight_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
+            self.weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
             self.action_probs.append(tf.exp(self.action_logprobs[index]))
 
         self.sess.run(tf.global_variables_initializer())
@@ -105,13 +90,13 @@ class FFContinuous(FeedForward):
         self.std = args.get('std', "Const")
         self.init_log_std = args.get('init_log_std', 0)
         self.create_output()
-        for weight, ph in zip(self.weights, self.weight_phs):
+        for weight, ph in zip(self.weights, self.weights_phs):
             self.set_op.append(weight.assign(ph))
 
     def create_output(self):
         self.action_means, weights = denselayer("means", self.hidden, len(self.n_actions))
         self.weights += weights
-        self.weight_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
+        self.weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
 
         if self.std == "Const":
             self.action_log_stds = tf.get_variable("std", shape=(1, len(self.n_actions),),
@@ -124,12 +109,12 @@ class FFContinuous(FeedForward):
                                                    initializer=tf.constant_initializer(self.init_log_std))
             self.action_stds = tf.exp(self.action_log_stds)
             self.weights.append(self.action_log_stds)
-            self.weight_phs.append(tf.placeholder(tf.float32, shape=(1, len(self.n_actions))))
+            self.weights_phs.append(tf.placeholder(tf.float32, shape=(1, len(self.n_actions))))
 
         elif self.std == "Train":
             self.action_stds, weights = denselayer("stds", self.hidden, len(self.n_actions), tf.exp)
             self.weights += weights
-            self.weight_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
+            self.weights_phs += [tf.placeholder(tf.float32, shape=w.get_shape()) for w in weights]
         else:
             raise Exception
 

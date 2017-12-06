@@ -10,15 +10,14 @@ from io import BytesIO
 import tensorflow as tf
 import numpy as np
 
-
-def launch_workers(worker_args, filename, wait=True):
+def launch_workers(worker_args, n_workers, command='make_rollout', wait=True):
     processes = []
-    n_workers = worker_args['n_workers']
     for i in range(n_workers):
-        cmd = 'python3 ' + filename
+        cmd = 'python3 run_experiment.py'
         for key, value in worker_args.items():
             cmd += ' --{arg_key}={arg_value}'.format(arg_key=key, arg_value=value)
-        cmd += ' --worker_index={}'.format(i)
+        cmd += ' --id_worker={}'.format(i)
+        cmd += ' --command={}'.format(command)
         processes.append(
             subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, preexec_fn=os.setsid))
     if wait:

@@ -1,6 +1,6 @@
 import json
 
-config_name = 'rainbow.json'
+config_name = 'trpo_c_lland.json'
 args = \
     {
         "learning_rate": 0.0001,

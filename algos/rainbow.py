@@ -20,6 +20,7 @@ class RainbowTrainer(RainbowNetwork):
         self.l_rate = args['learning_rate']
         self.timesteps_per_launch = args['max_pathlength']
         self.n_workers = args['n_workers']
+        self.distributed = args['distributed']
         self.n_pre_tasks = args['n_pre_tasks']
         self.n_tests = args['n_tests']
         self.scale = args['scale']
@@ -34,7 +35,7 @@ class RainbowTrainer(RainbowNetwork):
         self.prioritized = args['prioritized']
         self.prior_alpha = args['prior_alpha']
         self.prior_beta = args['prior_beta']
-        self.save_every = args.get('save_every', 1)
+        self.save_every = args.get('save_every', 500)
         self.clip_error = args.get('clip_error', 10.)
         self.batch_size = args['batch_size']
         self.sums = self.sumsqrs = self.sumtime = 0
@@ -42,7 +43,12 @@ class RainbowTrainer(RainbowNetwork):
         self.create_internal()
         self.sess.run(tf.global_variables_initializer())
         self.train_scores = []
+        self.test_scores = []
         np.set_printoptions(precision=6)
+
+        # Worker parameters:
+        self.id_worker = args['id_worker']
+        self.test_mode = args['test_mode']
 
     def create_internal(self):
         self.action_input = tf.placeholder(tf.int32, shape=(None,))
@@ -75,6 +81,7 @@ class RainbowTrainer(RainbowNetwork):
 
         np.save(directory + 'timestep', np.array([self.timestep]))
         np.save(directory + 'train_scores', np.array(self.train_scores))
+        np.save(directory + 'test_scores', np.array(self.test_scores))
         print("Agent successfully saved in folder {}".format(directory))
 
     def load(self, name, iteration=None):
@@ -98,6 +105,7 @@ class RainbowTrainer(RainbowNetwork):
 
             self.timestep = np.load(directory + 'timestep.npy')[0]
             self.train_scores = np.load(directory + 'train_scores.npy').tolist()
+            self.test_scores = np.load(directory + 'test_scores.npy').tolist()
             print("Agent successfully loaded from folder {}".format(directory))
         except:
             print("Something is wrong, loading failed")
@@ -114,24 +122,86 @@ class RainbowTrainer(RainbowNetwork):
 
         self.set_target_weights(new_weights)
 
+    def make_rollout(self):
+        variables_server = Redis(port=12000)
+        if self.scale != 'off':
+            try:
+                means = hlp.load_object(variables_server.get("means"))
+                stds = hlp.load_object(variables_server.get("stds"))
+                self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
+            except:
+                pass
+        try:
+            weights = [hlp.load_object(variables_server.get("weight_{}".format(i))) for i in
+                       range(len(self.weights))]
+            self.set_weights(weights)
+        except:
+            pass
+        env = self.env
+        if self.test_mode:
+            n_tasks = self.n_tests
+        else:
+            n_tasks = self.n_pre_tasks
+        i_task = 0
+        paths = []
+        while i_task < n_tasks:
+            path = {}
+            rewards = []
+            sums = np.zeros((1, env.get_observation_space()))
+            sumsqrs = np.zeros(sums.shape)
+
+            env.reset()
+            while not env.done and env.timestamp < self.timesteps_per_launch:
+                sums += env.features
+                sumsqrs += np.square(env.features)
+                if not self.test_mode:
+                    actions = self.act(env.features, exploration=True)
+                else:
+                    actions = self.act(env.features, exploration=False)
+                env.step(actions)
+                rewards.append(env.reward)
+
+            path["rewards"] = rewards
+            path["sumobs"] = sums
+            path["sumsqrobs"] = sumsqrs
+            path["total"] = env.get_total_reward()
+            paths.append(path)
+            i_task += 1
+
+        if self.distributed:
+            variables_server.set("paths_{}".format(self.id_worker), hlp.dump_object(paths))
+        else:
+            self.paths = paths
+
     def train(self):
         cmd_server = 'redis-server --port 12000'
         p = subprocess.Popen(cmd_server, shell=True, preexec_fn=os.setsid)
         self.variables_server = Redis(port=12000)
-
-        if self.scale:
+        means = "-"
+        stds = "-"
+        if self.scale != 'off':
             if self.timestep == 0:
                 print("Time to measure features!")
-                worker_args = \
-                    {
-                        'config': self.config,
-                        'n_workers': self.n_workers
-                    }
-                hlp.launch_workers(worker_args, 'helpers/measure_features.py')
-                for i in range(self.n_workers * self.n_pre_tasks):
-                    self.sums += hlp.load_object(self.variables_server.get("sum_" + str(i)))
-                    self.sumsqrs += hlp.load_object(self.variables_server.get("sumsqr_" + str(i)))
-                    self.sumtime += hlp.load_object(self.variables_server.get("time_" + str(i)))
+                if self.distributed:
+                    worker_args = \
+                        {
+                            'config': self.config,
+                            'test_mode': False,
+                        }
+                    hlp.launch_workers(worker_args, self.n_workers)
+                    paths = []
+                    for i in range(self.n_workers):
+                        paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+                else:
+                    self.test_mode = False
+                    self.make_rollout()
+                    paths = self.paths
+
+                for path in paths:
+                    self.sums += path["sumobs"]
+                    self.sumsqrs += path["sumsqrobs"]
+                    self.sumtime += len(path["rewards"])
+
             stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
             means = self.sums / self.sumtime
             print("Init means: {}".format(means))
@@ -187,7 +257,6 @@ class RainbowTrainer(RainbowNetwork):
                 episode += 1
                 print("Episode #{}".format(episode), env.get_total_reward())
                 self.train_scores.append(env.get_total_reward())
-
                 for i in range(1, self.n_steps):
                     buffer_index = (buffer_index + 1) % self.n_steps
 
@@ -276,17 +345,24 @@ class RainbowTrainer(RainbowNetwork):
                     for i, weight in enumerate(weights):
                         self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
                     print("Time to test!")
-                    worker_args = \
-                        {
-                            'config': self.config,
-                            'n_workers': self.n_workers,
-                            'n_tasks': self.n_tests // self.n_workers,
-                            'test': True
-                        }
-                    hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
-                    paths = []
-                    for i in range(self.n_workers):
-                        paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+                    if self.distributed:
+                        weights = self.get_weights()
+                        for i, weight in enumerate(weights):
+                            self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
+                        worker_args = \
+                            {
+                                'config': self.config,
+                                'test_mode': True,
+                            }
+                        hlp.launch_workers(worker_args, self.n_workers)
+                        paths = []
+                        for i in range(self.n_workers):
+                            paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+                    else:
+                        self.test_mode = True
+                        self.make_rollout()
+                        paths = self.paths
+
                     total_rewards = np.array([path["total"] for path in paths])
                     eplens = np.array([len(path["rewards"]) for path in paths])
                     print("""
@@ -295,14 +371,19 @@ Mean test score:           {test_scores}
 Mean test episode length:  {test_eplengths}
 Max test score:            {max_test}
 Time for iteration:        {tt}
+Mean of features:          {means}
+Std of features:           {stds}
 -------------------------------------------------------------
                                     """.format(
+                        means=means,
+                        stds=stds,
                         test_scores=np.mean(total_rewards),
                         test_eplengths=np.mean(eplens),
                         max_test=np.max(total_rewards),
                         tt=time.time() - start_time
                     ))
                     start_time = time.time()
+                    self.test_scores.append(np.mean(total_rewards))
 
             iteration += 1
             self.timestep += 1

@@ -40,8 +40,14 @@ class DDPGTrainer(DDPGNetwork):
         self.timestep = 0
         self.create_internal()
         self.sess.run(tf.global_variables_initializer())
+
         self.train_scores = []
+        self.test_scores = []
         np.set_printoptions(precision=6)
+
+        # Worker parameters:
+        self.id_worker = args['id_worker']
+        self.test_mode = args['test_mode']
 
     def create_internal(self):
         td_error = self.better_value - self.critic_value
@@ -59,17 +65,18 @@ class DDPGTrainer(DDPGNetwork):
         if not os.path.exists(directory):
             os.makedirs(directory)
 
-        for i, tensor in enumerate(tf.global_variables()):
-            value = self.sess.run(tensor)
-            np.save(directory + 'weight_{}'.format(i), value)
+        for i, w in enumerate(tf.global_variables()):
+            np.save(directory + 'weight_{}'.format(i), self.sess.run(w))
 
-        if self.scale:
+        if self.scale!='off':
             np.save(directory + 'sums', self.sums)
             np.save(directory + 'sumsquares', self.sumsqrs)
             np.save(directory + 'sumtime', self.sumtime)
 
         np.save(directory + 'timestep', np.array([self.timestep]))
         np.save(directory + 'train_scores', np.array(self.train_scores))
+        np.save(directory + 'test_scores', np.array(self.test_scores))
+
         print("Agent successfully saved in folder {}".format(directory))
 
     def load(self, name, iteration=None):
@@ -81,18 +88,20 @@ class DDPGTrainer(DDPGNetwork):
             if iteration is None:
                 iteration = np.max([int(x[10:]) for x in [dir for dir in os.walk(directory)][0][1]])
             directory += 'iteration_{}'.format(iteration) + '/'
+            weights = [np.zeros(shape=w.get_shape()) for w in self.weights]
+            for i, w in enumerate(tf.global_variables()):
+                weights[i] = np.load(directory + 'weight_{}.npy'.format(i))
+            self.set_weights(weights)
 
-            for i, tensor in enumerate(tf.global_variables()):
-                arr = np.load(directory + 'weight_{}.npy'.format(i))
-                self.sess.run(tensor.assign(arr))
-
-            if self.scale:
+            if self.scale != 'off':
                 self.sums = np.load(directory + 'sums.npy')
                 self.sumsqrs = np.load(directory + 'sumsquares.npy')
                 self.sumtime = np.load(directory + 'sumtime.npy')
 
             self.timestep = np.load(directory + 'timestep.npy')[0]
             self.train_scores = np.load(directory + 'train_scores.npy').tolist()
+            self.test_scores = np.load(directory + 'test_scores.npy').tolist()
+
             print("Agent successfully loaded from folder {}".format(directory))
         except:
             print("Something is wrong, loading failed")
@@ -118,6 +127,54 @@ class DDPGTrainer(DDPGNetwork):
 
         self.set_target_weights(new_weights)
 
+    def make_rollout(self):
+        variables_server = Redis(port=12000)
+        if self.scale != 'off':
+            try:
+                means = hlp.load_object(variables_server.get("means"))
+                stds = hlp.load_object(variables_server.get("stds"))
+                self.sess.run(self.norm_set_op, feed_dict=dict(zip(self.norm_phs, [means, stds])))
+            except:
+                pass
+        try:
+            weights = [hlp.load_object(variables_server.get("weight_{}".format(i))) for i in
+                       range(len(self.weights))]
+            self.set_weights(weights)
+        except:
+            pass
+        env = self.env
+        if self.test_mode:
+            n_tasks = self.n_tests
+        else:
+            n_tasks = self.n_pre_tasks
+        i_task = 0
+        paths = []
+        while i_task < n_tasks:
+            path = {}
+            rewards = []
+            sums = np.zeros((1, env.get_observation_space()))
+            sumsqrs = np.zeros(sums.shape)
+
+            env.reset()
+            while not env.done and env.timestamp < self.timesteps_per_launch:
+                sums += env.features
+                sumsqrs += np.square(env.features)
+                if not self.test_mode:
+                    actions = self.act(env.features, exploration=True)
+                else:
+                    actions = self.act(env.features, exploration=False)
+                env.step(actions)
+                rewards.append(env.reward)
+
+            path["rewards"] = rewards
+            path["sumobs"] = sums
+            path["sumsqrobs"] = sumsqrs
+            path["total"] = env.get_total_reward()
+            paths.append(path)
+            i_task += 1
+
+        self.paths = paths
+
     def train(self):
         cmd_server = 'redis-server --port 12000'
         p = subprocess.Popen(cmd_server, shell=True, preexec_fn=os.setsid)
@@ -125,17 +182,13 @@ class DDPGTrainer(DDPGNetwork):
 
         if self.scale:
             if self.timestep == 0:
-                print("Time to measure features!")
-                worker_args = \
-                    {
-                        'config': self.config,
-                        'n_workers': self.n_workers
-                    }
-                hlp.launch_workers(worker_args, 'helpers/measure_features.py')
-                for i in range(self.n_workers * self.n_pre_tasks):
-                    self.sums += hlp.load_object(self.variables_server.get("sum_" + str(i)))
-                    self.sumsqrs += hlp.load_object(self.variables_server.get("sumsqr_" + str(i)))
-                    self.sumtime += hlp.load_object(self.variables_server.get("time_" + str(i)))
+                self.test_mode = False
+                self.make_rollout()
+                paths = self.paths
+                for path in paths:
+                    self.sums += path["sumobs"]
+                    self.sumsqrs += path["sumsqrobs"]
+                    self.sumtime += len(path["rewards"])
             stds = np.sqrt((self.sumsqrs - np.square(self.sums) / self.sumtime) / (self.sumtime - 1))
             means = self.sums / self.sumtime
             print("Init means: {}".format(means))
@@ -198,17 +251,9 @@ class DDPGTrainer(DDPGNetwork):
                     self.variables_server.set("weight_" + str(i), hlp.dump_object(weight))
                 if iteration % self.test_every == 0:
                     print("Time to test!")
-                    worker_args = \
-                        {
-                            'config': self.config,
-                            'n_workers': self.n_workers,
-                            'n_tasks': self.n_tests // self.n_workers,
-                            'test': True
-                        }
-                    hlp.launch_workers(worker_args, 'helpers/make_rollout.py')
-                    paths = []
-                    for i in range(self.n_workers):
-                        paths += hlp.load_object(self.variables_server.get("paths_{}".format(i)))
+                    self.test_mode = True
+                    self.make_rollout()
+                    paths = self.paths
                     total_rewards = np.array([path["total"] for path in paths])
                     eplens = np.array([len(path["rewards"]) for path in paths])
                     print("""
@@ -225,6 +270,8 @@ Time for iteration:        {tt}
                         tt=time.time() - start_time
                     ))
                     start_time = time.time()
+                    self.test_scores.append(np.mean(total_rewards))
 
+                self.timestep += 1
             iteration += 1
-            self.timestep += 1
+

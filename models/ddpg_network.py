@@ -17,6 +17,7 @@ class DDPGNetwork(BaseModel):
         self.n_hiddens = args['n_hiddens']
         self.n_actions = args['n_actions']
         self.n_features = args['n_features']
+        self.std = args['action_noise']
         self.nonlinearity = args.get('nonlin', tf.nn.relu)
 
         self.state_input = tf.placeholder(tf.float32, shape=(None, self.n_features))
@@ -76,19 +77,19 @@ class DDPGNetwork(BaseModel):
         return value, weights, weight_phs
 
     def create_networks(self):
-        self.mean = tf.get_variable("means", shape=(1, int(self.state_input.get_shape()[1])),
-                                    initializer=tf.constant_initializer(0),
-                                    trainable=False)
-        self.std = tf.get_variable("stds", shape=(1, int(self.state_input.get_shape()[1])),
-                                   initializer=tf.constant_initializer(1),
-                                   trainable=False)
+        input = self.state_input
+        mean = tf.get_variable("means", shape=(1, int(input.get_shape()[1])), initializer=tf.constant_initializer(0),
+                               trainable=False)
+        std = tf.get_variable("stds", shape=(1, int(input.get_shape()[1])), initializer=tf.constant_initializer(1),
+                              trainable=False)
 
-        mean_ph = tf.placeholder(tf.float32, shape=self.mean.get_shape())
-        std_ph = tf.placeholder(tf.float32, shape=self.std.get_shape())
-        self.norm_set_op = [self.mean.assign(mean_ph), self.std.assign(std_ph)]
+        mean_ph = tf.placeholder(tf.float32, shape=mean.get_shape())
+        std_ph = tf.placeholder(tf.float32, shape=std.get_shape())
+        self.norm_set_op = [mean.assign(mean_ph), std.assign(std_ph)]
         self.norm_phs = [mean_ph, std_ph]
-        self.good_input = tf.clip_by_value((self.state_input - self.mean) / (self.std + 1e-5), -50, 50)
-        self.good_next_input = tf.clip_by_value((self.next_state_input - self.mean) / (self.std + 1e-5), -50, 50)
+
+        self.good_input = tf.clip_by_value((input - mean) / (std + 1e-5), -20, 20)
+        self.good_next_input = tf.clip_by_value((self.next_state_input - mean) / (std + 1e-5), -20, 20)
 
         self.action_target_means, self.target_weights, self.target_weights_phs = self.create_actor("target_actor",
                                                                                               self.good_next_input)
@@ -105,7 +106,7 @@ class DDPGNetwork(BaseModel):
 
     def act(self, obs, exploration=False):
         means = self.sess.run(self.action_means, feed_dict={self.state_input: obs})
-        means = means[0]
+        means = means[0] + np.random.normal(size=means[0].shape) * self.std
         return means
 
     def get_value_weights(self):

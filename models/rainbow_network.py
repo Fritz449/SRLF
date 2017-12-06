@@ -99,7 +99,7 @@ class RainbowNetwork(BaseModel):
                                                                                                    self.good_next_input)
 
     def act(self, obs, exploration=False):
-        if exploration and np.random.randint(100)<1:
+        if exploration and np.random.randint(100)<5:
             greedy_action = np.random.randint(self.n_actions)
         else:
             atom_probs = self.sess.run(self.atom_probs, feed_dict={self.state_input: obs})
