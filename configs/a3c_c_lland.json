@@ -1,0 +1,21 @@
+{
+    "trainer": "A3C",
+    "config": "a3c_c_lland.json",
+    "max_pathlength": 2000,
+    "continuous": true,
+    "env_type": "gym",
+    "env_name": "LunarLanderContinuous-v2",
+    "distributed": true,
+    "n_workers": 4,
+    "std": "Param",
+    "init_log_std": -1,
+    "n_hiddens": [
+        256
+    ],
+    "entropy_coef": 0.001,
+    "learning_rate": 0.0001,
+    "n_steps": 100,
+    "n_tests": 4,
+    "gamma": 0.995,
+    "scale": "off"
+}

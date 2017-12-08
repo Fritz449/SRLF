@@ -6,7 +6,7 @@ import tensorflow as tf
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-tf.app.flags.DEFINE_string("config", 'rainbow.json', "What config the agent should use")
+tf.app.flags.DEFINE_string("config", 'a3c_c_lland.json', "What config the agent should use")
 tf.app.flags.DEFINE_integer("id_worker", 0, "Index of task within the job")
 tf.app.flags.DEFINE_boolean("test_mode", False, "Index of task within the job")
 tf.app.flags.DEFINE_string("command", 'train', "What the agent should do")

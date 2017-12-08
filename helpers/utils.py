@@ -36,7 +36,6 @@ def agent_from_config(config):
             from algos.es_discrete import EvolutionStrategiesTrainer
             return EvolutionStrategiesTrainer
     elif config['trainer'] == 'TRPO':
-        config['critic'] = True
         if config['continuous']:
             from algos.trpo_continuous import TRPOContinuousTrainer
             return TRPOContinuousTrainer
@@ -52,6 +51,14 @@ def agent_from_config(config):
     elif config['trainer'] == 'Rainbow':
         from algos.rainbow import RainbowTrainer
         return RainbowTrainer
+    elif config['trainer'] == 'A3C':
+        from algos.rainbow import RainbowTrainer
+        if config['continuous']:
+            from algos.a3c_continuous import A3CContinuousTrainer
+            return A3CContinuousTrainer
+        else:
+            from algos.a3c_discrete import A3CDiscreteTrainer
+            return A3CDiscreteTrainer
     else:
         raise Exception
 
