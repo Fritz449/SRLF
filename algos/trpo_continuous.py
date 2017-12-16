@@ -213,8 +213,8 @@ class TRPOContinuousTrainer(FFContinuous):
             if not self.test_mode:
                 path["dist_tuples"] = np.array(dist_tuples)
             path["timestamps"] = np.array(timestamps)
-            path["sums"] = sums
-            path["sumsqrs"] = sumsqrs
+            path["sumobs"] = sums
+            path["sumsqrobs"] = sumsqrs
             path["terminated"] = env.done
             path["total"] = env.get_total_reward()
             paths.append(path)
